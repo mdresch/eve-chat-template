@@ -2,12 +2,69 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
 import type { HandleMessageStreamEvent, SessionState } from "eve/client";
 import { isChatTurnSettledEvent } from "@/lib/chat/events";
-import type { ActiveChat, ChatListItem, ChatListPage } from "@/lib/chat/types";
+import type { ActiveChat, ChatListItem, ChatListPage, ChatStatus } from "@/lib/chat/types";
 import { createFallbackTitle, DEFAULT_CHAT_TITLE } from "@/lib/chat/title";
-import { chat, chatEvent } from "@/lib/db/schema";
+import type { AiProvider } from "@/lib/db/schema";
+import { chat, chatEvent, userModelPreference, userProviderCredential } from "@/lib/db/schema";
 import { db } from "@/lib/db/client";
 
 const CHAT_HISTORY_PAGE_SIZE = 20;
+const STALE_PENDING_MESSAGE_SECONDS = 180;
+// Only these last-event types mean the chat is genuinely idle. Anything else —
+// including a normal-looking event like "actions.requested" or "message.appended"
+// sitting as the LAST recorded event — means a turn started and never settled.
+const SETTLED_READY_EVENT_TYPES = new Set([
+  "authorization.required",
+  "session.completed",
+  "session.waiting",
+]);
+
+function deriveChatStatus({
+  pendingUserMessage,
+  pendingUserMessageCreatedAt,
+  lastEventType,
+}: {
+  readonly pendingUserMessage: string | null;
+  readonly pendingUserMessageCreatedAt: Date | null;
+  readonly lastEventType: string | null;
+}): ChatStatus {
+  if (pendingUserMessage) {
+    const ageSeconds = pendingUserMessageCreatedAt
+      ? (Date.now() - pendingUserMessageCreatedAt.getTime()) / 1000
+      : Number.POSITIVE_INFINITY;
+
+    return ageSeconds > STALE_PENDING_MESSAGE_SECONDS ? "ended" : "generating";
+  }
+
+  if (lastEventType === null) {
+    return "ready";
+  }
+
+  return SETTLED_READY_EVENT_TYPES.has(lastEventType) ? "ready" : "ended";
+}
+
+async function getLastEventTypes(chatIds: readonly string[]): Promise<Map<string, string>> {
+  if (chatIds.length === 0) {
+    return new Map();
+  }
+
+  const result = await db.execute<{ chat_id: string; type: string | null }>(sql`
+    SELECT DISTINCT ON (chat_id) chat_id, event->>'type' as type
+    FROM chat_event
+    WHERE chat_id IN ${chatIds}
+    ORDER BY chat_id, event_index DESC
+  `);
+
+  const map = new Map<string, string>();
+
+  for (const row of result.rows) {
+    if (row.type) {
+      map.set(row.chat_id, row.type);
+    }
+  }
+
+  return map;
+}
 
 function encodeChatCursor(updatedAt: Date, id: string) {
   return `${updatedAt.toISOString()}::${id}`;
@@ -44,6 +101,8 @@ export async function listChatsPageByUser(
   const rows = await db
     .select({
       id: chat.id,
+      pendingUserMessage: chat.pendingUserMessage,
+      pendingUserMessageCreatedAt: chat.pendingUserMessageCreatedAt,
       title: chat.title,
       updatedAt: chat.updatedAt,
     })
@@ -65,10 +124,16 @@ export async function listChatsPageByUser(
   const hasMore = rows.length > CHAT_HISTORY_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, CHAT_HISTORY_PAGE_SIZE) : rows;
   const last = pageRows[pageRows.length - 1];
+  const lastEventTypes = await getLastEventTypes(pageRows.map((row) => row.id));
 
   return {
     items: pageRows.map((row) => ({
       id: row.id,
+      status: deriveChatStatus({
+        lastEventType: lastEventTypes.get(row.id) ?? null,
+        pendingUserMessage: row.pendingUserMessage,
+        pendingUserMessageCreatedAt: row.pendingUserMessageCreatedAt,
+      }),
       title: row.title,
       updatedAt: row.updatedAt.toISOString(),
     })),
@@ -406,4 +471,88 @@ export async function saveChatSnapshot({
 
 export async function deleteChatForUser(chatId: string, userId: string) {
   await db.delete(chat).where(and(eq(chat.id, chatId), eq(chat.userId, userId)));
+}
+
+export async function getUserModelPreference(userId: string): Promise<AiProvider | null> {
+  const [row] = await db
+    .select({ activeProvider: userModelPreference.activeProvider })
+    .from(userModelPreference)
+    .where(eq(userModelPreference.userId, userId))
+    .limit(1);
+
+  return row?.activeProvider ?? null;
+}
+
+export async function getUserProviderCredential(userId: string, provider: AiProvider) {
+  const [row] = await db
+    .select()
+    .from(userProviderCredential)
+    .where(and(eq(userProviderCredential.userId, userId), eq(userProviderCredential.provider, provider)))
+    .limit(1);
+
+  return row ?? null;
+}
+
+// For rendering the settings UI: never includes/decrypts encryptedApiKey.
+export async function listUserProviderCredentialSummaries(userId: string) {
+  return db
+    .select({
+      azureApiVersion: userProviderCredential.azureApiVersion,
+      azureResourceName: userProviderCredential.azureResourceName,
+      baseUrl: userProviderCredential.baseUrl,
+      model: userProviderCredential.model,
+      provider: userProviderCredential.provider,
+      updatedAt: userProviderCredential.updatedAt,
+    })
+    .from(userProviderCredential)
+    .where(eq(userProviderCredential.userId, userId));
+}
+
+export async function upsertUserProviderCredential(input: {
+  readonly userId: string;
+  readonly provider: AiProvider;
+  readonly encryptedApiKey: string | null;
+  readonly model?: string | null;
+  readonly azureResourceName?: string | null;
+  readonly azureApiVersion?: string | null;
+  readonly baseUrl?: string | null;
+}) {
+  await db
+    .insert(userProviderCredential)
+    .values({
+      azureApiVersion: input.azureApiVersion ?? null,
+      azureResourceName: input.azureResourceName ?? null,
+      baseUrl: input.baseUrl ?? null,
+      encryptedApiKey: input.encryptedApiKey,
+      model: input.model ?? null,
+      provider: input.provider,
+      userId: input.userId,
+    })
+    .onConflictDoUpdate({
+      set: {
+        azureApiVersion: input.azureApiVersion ?? null,
+        azureResourceName: input.azureResourceName ?? null,
+        baseUrl: input.baseUrl ?? null,
+        encryptedApiKey: input.encryptedApiKey,
+        model: input.model ?? null,
+        updatedAt: new Date(),
+      },
+      target: [userProviderCredential.userId, userProviderCredential.provider],
+    });
+}
+
+export async function setActiveProvider(userId: string, provider: AiProvider | null) {
+  await db
+    .insert(userModelPreference)
+    .values({ activeProvider: provider, userId })
+    .onConflictDoUpdate({
+      set: { activeProvider: provider, updatedAt: new Date() },
+      target: userModelPreference.userId,
+    });
+}
+
+export async function deleteUserProviderCredential(userId: string, provider: AiProvider) {
+  await db
+    .delete(userProviderCredential)
+    .where(and(eq(userProviderCredential.userId, userId), eq(userProviderCredential.provider, provider)));
 }

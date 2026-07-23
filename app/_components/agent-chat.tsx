@@ -17,11 +17,13 @@ import {
   ExternalLinkIcon,
   LockIcon,
   PlugIcon,
+  RefreshCwIcon,
   XIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  checkModelFallbackNoticeAction,
   checkSendLimitAction,
   appendChatEventAction,
   clearChatPendingMessageAction,
@@ -535,6 +537,14 @@ function findBoundaryEvent(events: readonly HandleMessageStreamEvent[]) {
   }
 }
 
+function statusFromSettledEvents(events: readonly HandleMessageStreamEvent[]) {
+  const boundary = findBoundaryEvent(events);
+
+  return boundary?.type === "turn.failed" || boundary?.type === "session.failed"
+    ? ("ended" as const)
+    : ("ready" as const);
+}
+
 function reduceEventsToMessageData(
   events: readonly HandleMessageStreamEvent[],
 ): EveMessageData {
@@ -690,6 +700,9 @@ export function AgentChatSession({
   const [currentTitle, setCurrentTitle] = useState(activeChat?.title ?? "New chat");
   const [clientError, setClientError] = useState<string | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const [providerNotice, setProviderNotice] = useState<string | null>(null);
+  const [resumeFailed, setResumeFailed] = useState(false);
+  const [retryTick, setRetryTick] = useState(0);
   const [resumedEvents, setResumedEvents] = useState<HandleMessageStreamEvent[]>([]);
   const [isResuming, setIsResuming] = useState(false);
   const [isFinalizingTurn, setIsFinalizingTurn] = useState(false);
@@ -780,12 +793,24 @@ export function AgentChatSession({
           events,
           session,
         });
+
+        if (session.sessionId) {
+          void checkModelFallbackNoticeAction(session.sessionId).then((provider) => {
+            if (provider) {
+              setProviderNotice(
+                "Your selected AI provider was unavailable for this reply — used the default instead.",
+              );
+            }
+          });
+        }
+
         eventIndexRef.current = events.length;
         knownInitialEventsRef.current = events;
         streamEventsRef.current = [];
         setStreamEvents([]);
         touchChat({
           id: chatId,
+          status: statusFromSettledEvents(events),
           title: currentTitleRef.current,
           updatedAt: new Date().toISOString(),
         });
@@ -981,7 +1006,7 @@ export function AgentChatSession({
       if (!activeChatIdRef.current) {
         const created = await createChatAction({ pendingUserMessage: firstMessage });
 
-        touchChat(created);
+        touchChat({ ...created, status: "generating" });
         setActiveChatId(created.id);
         setShellActiveChatId(created.id);
         activeChatIdRef.current = created.id;
@@ -1082,7 +1107,7 @@ export function AgentChatSession({
           chatId,
           message,
         });
-        touchChat(updated);
+        touchChat({ ...updated, status: "generating" });
       } catch (error) {
         restoreAfterFailedSend(
           error instanceof Error ? error.message : "Failed to save pending message.",
@@ -1222,7 +1247,7 @@ export function AgentChatSession({
         setStreamEvents(nextStreamEvents);
         localEventsRef.current = [];
         setLocalEvents([]);
-        touchChat(result.chat);
+        touchChat({ ...result.chat, status: "ready" });
         onActiveChatUpdated?.({
           events: skippedEvents,
           id: chatId,
@@ -1340,6 +1365,7 @@ export function AgentChatSession({
     setResumedEvents([]);
     setIsResuming(true);
     setClientError(null);
+    setResumeFailed(false);
 
     void (async () => {
       try {
@@ -1381,7 +1407,13 @@ export function AgentChatSession({
         const allEvents = [...existingEvents, ...newEvents];
 
         if (!newEvents.some(isChatTurnSettledEvent)) {
-          setClientError("Stream disconnected before the response completed.");
+          setResumeFailed(true);
+          touchChat({
+            id: activeChat.id,
+            status: "ended",
+            title: currentTitleRef.current,
+            updatedAt: new Date().toISOString(),
+          });
           return;
         }
 
@@ -1396,6 +1428,7 @@ export function AgentChatSession({
         setResumedEvents([]);
         touchChat({
           id: activeChat.id,
+          status: statusFromSettledEvents(allEvents),
           title: currentTitleRef.current,
           updatedAt: new Date().toISOString(),
         });
@@ -1411,7 +1444,13 @@ export function AgentChatSession({
         completed = true;
       } catch (error) {
         if (!cancelled && !isAbortError(error)) {
-          setClientError(error instanceof Error ? error.message : "Failed to resume stream.");
+          setResumeFailed(true);
+          touchChat({
+            id: activeChat.id,
+            status: "ended",
+            title: currentTitleRef.current,
+            updatedAt: new Date().toISOString(),
+          });
         }
       } finally {
         if (!cancelled) {
@@ -1436,9 +1475,16 @@ export function AgentChatSession({
     onPendingUserMessageSettled,
     pendingUserMessage,
     persistSessionState,
+    retryTick,
     touchChat,
     viewer,
   ]);
+
+  const handleRetryResume = useCallback(() => {
+    setResumeFailed(false);
+    resumeStartedRef.current = false;
+    setRetryTick((tick) => tick + 1);
+  }, []);
 
   useEffect(() => {
     currentTitleRef.current = currentTitle;
@@ -1499,6 +1545,10 @@ export function AgentChatSession({
         />
       ) : null}
 
+      {!toastError && providerNotice ? (
+        <NoticeToast message={providerNotice} onDismiss={() => setProviderNotice(null)} />
+      ) : null}
+
       {isEmpty && !activeChatId && !isChatRoute && emptyComposer ? (
         <EmptyChatBody composer={emptyComposer} />
       ) : (
@@ -1535,6 +1585,9 @@ export function AgentChatSession({
                     onSkip={handleSkipAuthorization}
                   />
                 ))}
+                {resumeFailed && !isResuming ? (
+                  <TurnRetryPrompt onRetry={handleRetryResume} />
+                ) : null}
                 {thinkingPresence.shouldRender ? (
                   <ThinkingMessage isVisible={thinkingPresence.isVisible} />
                 ) : null}
@@ -1656,6 +1709,31 @@ function ConnectionAuthorizationPrompt({
                 variant="outline"
               >
                 {isSkipping ? "Skipping..." : "Skip"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function TurnRetryPrompt({ onRetry }: { readonly onRetry: () => void }) {
+  return (
+    <article aria-live="polite" className="flex w-full justify-start px-3">
+      <div className="w-full max-w-md rounded-lg border border-border/70 bg-muted/20 p-3 text-sm shadow-sm">
+        <div className="flex gap-3">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
+            <RefreshCwIcon className="size-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-foreground">This reply didn't finish</p>
+            <p className="mt-1 text-muted-foreground">
+              The connection to the model was interrupted before it could respond. Try again?
+            </p>
+            <div className="mt-2.5">
+              <Button onClick={onRetry} size="xs" type="button">
+                Retry
               </Button>
             </div>
           </div>
@@ -2055,6 +2133,37 @@ export function ErrorToast({
       </div>
       <Button
         aria-label="Dismiss error"
+        className="-mt-1 -mr-1 text-muted-foreground hover:text-foreground"
+        onClick={onDismiss}
+        size="icon-xs"
+        type="button"
+        variant="ghost"
+      >
+        <XIcon className="size-3.5" />
+      </Button>
+    </div>
+  );
+}
+
+export function NoticeToast({
+  message,
+  onDismiss,
+}: {
+  readonly message: string;
+  readonly onDismiss: () => void;
+}) {
+  return (
+    <div
+      aria-live="polite"
+      className="fixed top-3 right-3 z-50 flex w-[calc(100vw-1.5rem)] max-w-sm items-start gap-3 rounded-md border border-border bg-background/95 p-3 text-sm shadow-lg backdrop-blur sm:top-4 sm:right-4"
+      role="status"
+    >
+      <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <p className="text-muted-foreground">{message}</p>
+      </div>
+      <Button
+        aria-label="Dismiss notice"
         className="-mt-1 -mr-1 text-muted-foreground hover:text-foreground"
         onClick={onDismiss}
         size="icon-xs"

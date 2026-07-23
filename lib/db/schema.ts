@@ -5,6 +5,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -98,6 +99,46 @@ export const chatEvent = pgTable(
   ],
 );
 
+export const AI_PROVIDER_VALUES = [
+  "anthropic",
+  "google",
+  "mistral",
+  "azure",
+  "ollama",
+  "foundry-local",
+] as const;
+export type AiProvider = (typeof AI_PROVIDER_VALUES)[number];
+
+export const userModelPreference = pgTable("user_model_preference", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  activeProvider: text("active_provider", { enum: AI_PROVIDER_VALUES }),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const userProviderCredential = pgTable(
+  "user_provider_credential",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    provider: text("provider", { enum: AI_PROVIDER_VALUES }).notNull(),
+    // Nullable: Ollama/Foundry Local commonly run with no key at all.
+    encryptedApiKey: text("encrypted_api_key"),
+    model: text("model"), // selected model id; for azure, the deployment name
+    azureResourceName: text("azure_resource_name"),
+    azureApiVersion: text("azure_api_version"),
+    // Ollama/Foundry Local only; e.g. http://localhost:11434/v1
+    baseUrl: text("base_url"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.provider] })],
+);
+
 export type Chat = typeof chat.$inferSelect;
 export type ChatEvent = typeof chatEvent.$inferSelect;
 export type User = typeof user.$inferSelect;
+export type UserModelPreference = typeof userModelPreference.$inferSelect;
+export type UserProviderCredential = typeof userProviderCredential.$inferSelect;

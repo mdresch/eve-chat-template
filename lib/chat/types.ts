@@ -7,10 +7,13 @@ export type Viewer = {
   readonly name: string;
 };
 
+export type ChatStatus = "ended" | "generating" | "ready";
+
 export type ChatListItem = {
   readonly id: string;
   readonly title: string;
   readonly updatedAt: string;
+  readonly status: ChatStatus;
 };
 
 export type ChatListPage = {

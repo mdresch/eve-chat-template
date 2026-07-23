@@ -109,20 +109,24 @@ export function AgentChatShell({
     [],
   );
 
-  const touchChat = useCallback((chat: ChatListItem) => {
-    setHistory((items) => {
-      const current = items.find((item) => item.id === chat.id);
+  const touchChat = useCallback(
+    (chat: Omit<ChatListItem, "status"> & { readonly status?: ChatListItem["status"] }) => {
+      setHistory((items) => {
+        const current = items.find((item) => item.id === chat.id);
 
-      return [
-        {
-          id: chat.id,
-          title: chat.title || current?.title || "New chat",
-          updatedAt: chat.updatedAt,
-        },
-        ...items.filter((item) => item.id !== chat.id),
-      ];
-    });
-  }, []);
+        return [
+          {
+            id: chat.id,
+            status: chat.status ?? current?.status ?? "ready",
+            title: chat.title || current?.title || "New chat",
+            updatedAt: chat.updatedAt,
+          },
+          ...items.filter((item) => item.id !== chat.id),
+        ];
+      });
+    },
+    [],
+  );
 
   const updateChatTitle = useCallback((chatId: string, title: string) => {
     setHistory((items) =>

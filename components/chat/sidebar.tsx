@@ -148,10 +148,11 @@ export function ChatSidebar({
                   key={chat.id}
                 >
                   <Link
-                    className="flex h-8 min-w-0 items-center px-2 pr-8 text-sm"
+                    className="flex h-8 min-w-0 items-center gap-2 px-2 pr-8 text-sm"
                     href={`/chat/${chat.id}`}
                     onClick={() => onNavigate?.(chat.id)}
                   >
+                    <ChatStatusDot status={chat.status} />
                     <span className="block truncate">{chat.title}</span>
                     <span className="sr-only">Updated {formatHistoryTime(chat.updatedAt)}</span>
                   </Link>
@@ -260,4 +261,24 @@ function formatHistoryTime(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function ChatStatusDot({ status }: { readonly status: ChatListItem["status"] }) {
+  const label =
+    status === "generating" ? "Generating a response" : status === "ended" ? "Chat ended" : "Ready";
+
+  return (
+    <>
+      <span
+        aria-hidden
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          status === "generating" && "bg-amber-500",
+          status === "ended" && "bg-red-500",
+          status === "ready" && "bg-emerald-500",
+        )}
+      />
+      <span className="sr-only">{label}</span>
+    </>
+  );
 }

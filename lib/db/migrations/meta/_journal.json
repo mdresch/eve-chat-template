@@ -15,6 +15,13 @@
       "when": 1781635077631,
       "tag": "0001_tidy_hitman",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784746652757,
+      "tag": "0002_tranquil_brood",
+      "breakpoints": true
     }
   ]
 }

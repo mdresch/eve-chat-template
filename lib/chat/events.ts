@@ -5,6 +5,7 @@ export function isChatTurnSettledEvent(event: HandleMessageStreamEvent) {
     event.type === "authorization.required" ||
     event.type === "session.completed" ||
     event.type === "session.failed" ||
-    event.type === "session.waiting"
+    event.type === "session.waiting" ||
+    event.type === "turn.failed"
   );
 }

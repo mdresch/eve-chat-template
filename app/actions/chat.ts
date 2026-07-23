@@ -13,6 +13,7 @@ import {
   skipChatAuthorization,
 } from "@/lib/db/queries";
 import { assertChatMessageLength } from "@/lib/chat/limits";
+import { consumeModelFallbackNotice } from "@/lib/model-fallback-notice";
 import { RateLimitError, enforceRateLimit } from "@/lib/rate-limit";
 import { getServerViewer } from "@/lib/session";
 
@@ -163,6 +164,10 @@ export async function deleteChatAction(chatId: string) {
   await deleteChatForUser(chatId, viewer.id);
 
   return listChatsByUser(viewer.id);
+}
+
+export async function checkModelFallbackNoticeAction(sessionId: string) {
+  return consumeModelFallbackNotice(sessionId);
 }
 
 async function requireViewer() {

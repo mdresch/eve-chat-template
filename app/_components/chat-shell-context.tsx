@@ -21,7 +21,9 @@ type ChatShellContextValue = {
     enabled: boolean,
   ) => void;
   readonly setupStatus: SetupStatus;
-  readonly touchChat: (chat: ChatListItem) => void;
+  readonly touchChat: (
+    chat: Omit<ChatListItem, "status"> & { readonly status?: ChatListItem["status"] },
+  ) => void;
   readonly updateChatTitle: (chatId: string, title: string) => void;
   readonly viewer: Viewer | null;
 };

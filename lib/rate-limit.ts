@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { Redis } from "@upstash/redis";
 
 type LimitOptions = {
@@ -60,6 +61,17 @@ export async function enforceRateLimit(options: LimitOptions) {
 
   if (count > options.limit) {
     const retryAfter = options.windowSeconds - (now % options.windowSeconds);
+
+    Sentry.logger.warn(Sentry.logger.fmt`Rate limit exceeded for ${options.prefix}`, {
+      count,
+      limit: options.limit,
+      prefix: options.prefix,
+      retryAfter,
+    });
+    Sentry.metrics.count("rate_limit_exceeded", 1, {
+      attributes: { prefix: options.prefix },
+    });
+
     throw new RateLimitError(retryAfter);
   }
 }

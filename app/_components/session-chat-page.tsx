@@ -110,7 +110,7 @@ export function SessionChatPage({
 
         writePendingChatMessage(created.id, pendingMessage);
         clearPendingChatMessage(chatId);
-        touchChat(created);
+        touchChat({ ...created, status: "generating" });
         setActiveChatId(created.id);
         router.replace(`/chat/${created.id}`, { scroll: false });
       } catch (error) {
