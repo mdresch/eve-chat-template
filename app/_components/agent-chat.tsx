@@ -14,6 +14,9 @@ import { defaultMessageReducer, useEveAgent } from "eve/react";
 import {
   AlertCircleIcon,
   ChevronDownIcon,
+  ContainerIcon,
+  CopyCheckIcon,
+  CopyIcon,
   ExternalLinkIcon,
   LockIcon,
   PlugIcon,
@@ -48,6 +51,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isChatTurnSettledEvent } from "@/lib/chat/events";
 import { getChatMessageLengthError } from "@/lib/chat/limits";
+import { findLatestSandboxContainerName } from "@/lib/chat/sandbox";
 import type { ActiveChat, SetupStatus, Viewer } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
 
@@ -524,6 +528,17 @@ function advanceBrowserSession({
     };
   }
 
+  if (events.length > 0 && !boundary) {
+    // The stream ended (idle timeout, disconnect) without ever reaching a
+    // settled event. Keep the session identity so a reload or retry can
+    // resume this same in-flight turn instead of silently starting over.
+    return {
+      continuationToken: continuationToken ?? session.continuationToken,
+      sessionId,
+      streamIndex: baseStreamIndex + events.length,
+    };
+  }
+
   return createInitialSessionState();
 }
 
@@ -540,7 +555,9 @@ function findBoundaryEvent(events: readonly HandleMessageStreamEvent[]) {
 function statusFromSettledEvents(events: readonly HandleMessageStreamEvent[]) {
   const boundary = findBoundaryEvent(events);
 
-  return boundary?.type === "turn.failed" || boundary?.type === "session.failed"
+  // No boundary at all means the turn never reached a settled event (the
+  // stream idle-timed-out or disconnected mid-turn) — that's not "ready".
+  return !boundary || boundary.type === "turn.failed" || boundary.type === "session.failed"
     ? ("ended" as const)
     : ("ready" as const);
 }
@@ -808,6 +825,14 @@ export function AgentChatSession({
         knownInitialEventsRef.current = events;
         streamEventsRef.current = [];
         setStreamEvents([]);
+
+        if (hasOpenChatTurn(events)) {
+          // The stream ended without the turn ever settling (idle timeout or
+          // disconnect). Surface the same retry affordance used after a
+          // reload, right here in the live tab.
+          setResumeFailed(true);
+        }
+
         touchChat({
           id: chatId,
           status: statusFromSettledEvents(events),
@@ -930,6 +955,10 @@ export function AgentChatSession({
   );
   const displayData = useMemo(() => reduceEventsToMessageData(displayEvents), [displayEvents]);
   const displayMessages = displayData.messages;
+  const sandboxContainerName = useMemo(
+    () => findLatestSandboxContainerName(displayMessages),
+    [displayMessages],
+  );
   const displayChatId = chatId ?? activeChatId ?? "new";
   const hasLocalPendingUserMessage = Boolean(localPendingUserMessage);
   const pendingAuthorizations = getPendingAuthorizations(displayEvents);
@@ -1554,7 +1583,7 @@ export function AgentChatSession({
       ) : (
         <>
           {isChatRoute ? (
-            <SessionHeader />
+            <SessionHeader containerName={sandboxContainerName} />
           ) : null}
           {isEmpty ? (
             <BlankChatBody />
@@ -2085,8 +2114,43 @@ function ThinkingMessage({ isVisible }: { readonly isVisible: boolean }) {
   );
 }
 
-function SessionHeader() {
-  return <div className="h-12 shrink-0" />;
+function SessionHeader({ containerName }: { readonly containerName: string | null }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setCopied(false), 1500);
+
+    return () => window.clearTimeout(timeout);
+  }, [copied]);
+
+  if (!containerName) {
+    return <div className="h-12 shrink-0" />;
+  }
+
+  return (
+    <div className="flex h-12 shrink-0 items-center justify-end px-3">
+      <button
+        className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+        onClick={() => {
+          void navigator.clipboard.writeText(containerName).then(() => setCopied(true));
+        }}
+        title={`Docker sandbox container — click to copy: ${containerName}`}
+        type="button"
+      >
+        <ContainerIcon className="size-3" />
+        <span className="max-w-40 truncate">{containerName}</span>
+        {copied ? (
+          <CopyCheckIcon className="size-3 text-emerald-500" />
+        ) : (
+          <CopyIcon className="size-3" />
+        )}
+      </button>
+    </div>
+  );
 }
 
 function BlankChatBody() {
