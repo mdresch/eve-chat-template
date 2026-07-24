@@ -31,6 +31,12 @@ export function buildModelFromCredential(credential: UserProviderCredential) {
         baseURL: requireField(credential.baseUrl, "base URL"),
         name: credential.provider,
       })(requireModel(credential));
+    case "bifrost":
+      return createOpenAICompatible({
+        apiKey: requireField(apiKey, "API key"),
+        baseURL: requireField(credential.baseUrl, "base URL"),
+        name: "bifrost",
+      })(requireModel(credential));
   }
 }
 

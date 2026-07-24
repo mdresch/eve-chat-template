@@ -12,10 +12,11 @@ import {
   setActiveProvider,
   upsertUserProviderCredential,
 } from "@/lib/db/queries";
-import { AI_PROVIDER_VALUES, type AiProvider } from "@/lib/db/schema";
+import { AI_PROVIDER_VALUES, BASE_URL_PROVIDERS, type AiProvider } from "@/lib/db/schema";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import {
   listAnthropicModels,
+  listBifrostModels,
   listGoogleModels,
   listMistralModels,
   listOpenAiCompatibleModels,
@@ -75,6 +76,8 @@ export async function listModelsForProviderAction(
     case "ollama":
     case "foundry-local":
       return listOpenAiCompatibleModels(requireBaseUrl(credentials), credentials.apiKey);
+    case "bifrost":
+      return listBifrostModels(requireBaseUrl(credentials), requireKey(credentials));
   }
 }
 
@@ -104,6 +107,14 @@ export async function listModelsForStoredProviderAction(provider: Exclude<AiProv
     }
 
     return listOpenAiCompatibleModels(credential.baseUrl, apiKey);
+  }
+
+  if (provider === "bifrost") {
+    if (!credential.baseUrl) {
+      throw new Error("Missing base URL on stored credential.");
+    }
+
+    return listBifrostModels(credential.baseUrl, requireKey({ apiKey }));
   }
 
   return listModelsForProviderAction(provider, { apiKey });
@@ -185,6 +196,12 @@ export async function testStoredProviderCredentialAction(provider: AiProvider) {
         }
 
         await listOpenAiCompatibleModels(credential.baseUrl, apiKey);
+      } else if (provider === "bifrost") {
+        if (!credential.baseUrl) {
+          throw new Error("Missing base URL on stored credential.");
+        }
+
+        await listBifrostModels(credential.baseUrl, requireKey({ apiKey }));
       } else {
         await listModelsForProviderAction(provider, { apiKey });
       }
@@ -221,7 +238,7 @@ export async function saveProviderCredentialAction(input: {
     throw new Error("Azure requires a resource name and deployment name.");
   }
 
-  if (LOCAL_PROVIDERS.has(input.provider) && !input.baseUrl) {
+  if (BASE_URL_PROVIDERS.includes(input.provider) && !input.baseUrl) {
     throw new Error("A base URL is required.");
   }
 

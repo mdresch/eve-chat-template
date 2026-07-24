@@ -106,8 +106,18 @@ export const AI_PROVIDER_VALUES = [
   "azure",
   "ollama",
   "foundry-local",
+  "bifrost",
 ] as const;
 export type AiProvider = (typeof AI_PROVIDER_VALUES)[number];
+
+// Providers that need a Base URL field in the settings UI (self-hosted or
+// pointed at a non-default endpoint). Distinct from "key optional" — see
+// LOCAL_PROVIDERS in app/actions/settings.ts and the settings form.
+export const BASE_URL_PROVIDERS = [
+  "ollama",
+  "foundry-local",
+  "bifrost",
+] as const satisfies readonly AiProvider[];
 
 export const userModelPreference = pgTable("user_model_preference", {
   userId: text("user_id")

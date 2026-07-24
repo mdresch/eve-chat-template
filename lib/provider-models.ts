@@ -89,3 +89,16 @@ export async function listOpenAiCompatibleModels(
 
   return data.map((model) => ({ id: model.id, label: model.id }));
 }
+
+// Bifrost's GET /v1/models returns the same { data: [{ id, ... }] } shape as
+// any OpenAI-compatible server, so this just adds a clearer error message.
+export async function listBifrostModels(
+  baseUrl: string,
+  apiKey: string,
+): Promise<ProviderModelOption[]> {
+  try {
+    return await listOpenAiCompatibleModels(baseUrl, apiKey);
+  } catch {
+    throw new Error("Could not reach your Bifrost gateway. Check the base URL and key.");
+  }
+}

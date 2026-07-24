@@ -29,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { AiProvider } from "@/lib/db/schema";
+import { BASE_URL_PROVIDERS, type AiProvider } from "@/lib/db/schema";
 import { cn } from "@/lib/utils";
 import type { ProviderModelOption } from "@/lib/provider-models";
 
@@ -49,6 +49,7 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   mistral: "Mistral",
   ollama: "Ollama",
   "foundry-local": "Microsoft Foundry Local",
+  bifrost: "Bifrost Gateway",
 };
 
 const LOCAL_PROVIDERS = new Set<AiProvider>(["ollama", "foundry-local"]);
@@ -306,6 +307,10 @@ function describeCredential(provider: AiProvider, credential: CredentialSummary 
     return `${credential.azureResourceName} / ${credential.model}`;
   }
 
+  if (provider === "bifrost" && credential.baseUrl) {
+    return `${credential.baseUrl} · ${credential.model ?? "Configured"}`;
+  }
+
   return credential.model ?? "Configured";
 }
 
@@ -322,6 +327,9 @@ function ConfigureDialog({
 }) {
   const isAzure = provider === "azure";
   const isLocal = LOCAL_PROVIDERS.has(provider);
+  // Base URL field applies more broadly than "runs locally" (e.g. a self-hosted
+  // Bifrost gateway isn't local, but still needs an endpoint to point at).
+  const showsBaseUrl = BASE_URL_PROVIDERS.includes(provider);
   const isEditing = existingCredential !== null;
 
   const [apiKey, setApiKey] = useState("");
@@ -358,7 +366,7 @@ function ConfigureDialog({
           ? await listModelsForStoredProviderAction(nonAzureProvider)
           : await listModelsForProviderAction(nonAzureProvider, {
               apiKey: apiKey || undefined,
-              baseUrl: isLocal ? baseUrl : undefined,
+              baseUrl: showsBaseUrl ? baseUrl : undefined,
             });
 
       setModels(result);
@@ -408,7 +416,7 @@ function ConfigureDialog({
         apiKey: apiKey || undefined,
         azureApiVersion: isAzure ? azureApiVersion || undefined : undefined,
         azureResourceName: isAzure ? azureResourceName : undefined,
-        baseUrl: isLocal ? baseUrl : undefined,
+        baseUrl: showsBaseUrl ? baseUrl : undefined,
         model: isAzure ? azureDeploymentName : selectedModel,
         provider,
       });
@@ -416,7 +424,7 @@ function ConfigureDialog({
       onSaved({
         azureApiVersion: isAzure ? azureApiVersion || null : null,
         azureResourceName: isAzure ? azureResourceName : null,
-        baseUrl: isLocal ? baseUrl : null,
+        baseUrl: showsBaseUrl ? baseUrl : null,
         model: isAzure ? azureDeploymentName : selectedModel,
         provider,
         updatedAt: new Date(),
@@ -449,11 +457,11 @@ function ConfigureDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
-          {isLocal ? (
+          {showsBaseUrl ? (
             <Field label="Base URL">
               <Input
                 onChange={(event) => setBaseUrl(event.target.value)}
-                placeholder={DEFAULT_LOCAL_BASE_URL[provider]}
+                placeholder={DEFAULT_LOCAL_BASE_URL[provider] ?? "https://your-bifrost-host/v1"}
                 value={baseUrl}
               />
             </Field>
