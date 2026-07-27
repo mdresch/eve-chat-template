@@ -1,16 +1,13 @@
 "use server";
 
-import type { HandleMessageStreamEvent, SessionState } from "eve/client";
+import type { SessionState } from "eve/client";
 import {
-  appendChatEvent,
   clearChatPendingMessage,
   createChat,
   deleteChatForUser,
   listChatsByUser,
   markChatPendingMessage,
-  saveChatSnapshot,
   saveChatSessionState,
-  skipChatAuthorization,
 } from "@/lib/db/queries";
 import { assertChatMessageLength } from "@/lib/chat/limits";
 import { consumeModelFallbackNotice } from "@/lib/model-fallback-notice";
@@ -68,23 +65,6 @@ export async function checkSendLimitAction(input?: { readonly message?: string }
   }
 }
 
-export async function saveChatSnapshotAction(input: {
-  readonly chatId: string;
-  readonly events: readonly HandleMessageStreamEvent[];
-  readonly session: SessionState;
-}) {
-  const viewer = await requireViewer();
-
-  await saveChatSnapshot({
-    chatId: input.chatId,
-    events: input.events,
-    session: input.session,
-    userId: viewer.id,
-  });
-
-  return { ok: true };
-}
-
 export async function markChatPendingMessageAction(input: {
   readonly chatId: string;
   readonly message: string;
@@ -105,38 +85,6 @@ export async function clearChatPendingMessageAction(chatId: string) {
 
   await clearChatPendingMessage({
     chatId,
-    userId: viewer.id,
-  });
-
-  return { ok: true };
-}
-
-export async function skipChatAuthorizationAction(input: {
-  readonly chatId: string;
-  readonly events: readonly HandleMessageStreamEvent[];
-  readonly session: SessionState;
-}) {
-  const viewer = await requireViewer();
-
-  return skipChatAuthorization({
-    chatId: input.chatId,
-    events: input.events,
-    session: input.session,
-    userId: viewer.id,
-  });
-}
-
-export async function appendChatEventAction(input: {
-  readonly chatId: string;
-  readonly event: HandleMessageStreamEvent;
-  readonly eventIndex: number;
-}) {
-  const viewer = await requireViewer();
-
-  await appendChatEvent({
-    chatId: input.chatId,
-    event: input.event,
-    eventIndex: input.eventIndex,
     userId: viewer.id,
   });
 

@@ -71,6 +71,11 @@ export const chat = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     title: text("title").notNull().default("New chat"),
     eveSession: jsonb("eve_session").$type<SessionState | null>(),
+    // Docker container backing this chat's sandbox, if any. Set by
+    // agent/tools/bash.ts on each bash call — a stable, server-recorded
+    // fallback for surfacing which container to attach VS Code to, since
+    // reconstructing it client-side from message parts isn't always reliable.
+    sandboxContainerName: text("sandbox_container_name"),
     pendingUserMessage: text("pending_user_message"),
     pendingUserMessageCreatedAt: timestamp("pending_user_message_created_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -113,11 +118,11 @@ export type AiProvider = (typeof AI_PROVIDER_VALUES)[number];
 // Providers that need a Base URL field in the settings UI (self-hosted or
 // pointed at a non-default endpoint). Distinct from "key optional" — see
 // LOCAL_PROVIDERS in app/actions/settings.ts and the settings form.
-export const BASE_URL_PROVIDERS = [
+export const BASE_URL_PROVIDERS: readonly AiProvider[] = [
   "ollama",
   "foundry-local",
   "bifrost",
-] as const satisfies readonly AiProvider[];
+];
 
 export const userModelPreference = pgTable("user_model_preference", {
   userId: text("user_id")

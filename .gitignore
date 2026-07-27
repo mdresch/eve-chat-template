@@ -15,3 +15,7 @@ dist
 
 # Sentry Config File
 .env.sentry-build-plugin
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md

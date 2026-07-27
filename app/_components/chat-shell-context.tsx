@@ -7,6 +7,7 @@ export type EnabledConnections = {
   readonly linear: boolean;
   readonly notion: boolean;
   readonly sentry: boolean;
+  readonly atlassian: boolean;
 };
 
 type ChatShellContextValue = {
@@ -22,7 +23,10 @@ type ChatShellContextValue = {
   ) => void;
   readonly setupStatus: SetupStatus;
   readonly touchChat: (
-    chat: Omit<ChatListItem, "status"> & { readonly status?: ChatListItem["status"] },
+    chat: Omit<ChatListItem, "sandboxContainerName" | "status"> & {
+      readonly sandboxContainerName?: ChatListItem["sandboxContainerName"];
+      readonly status?: ChatListItem["status"];
+    },
   ) => void;
   readonly updateChatTitle: (chatId: string, title: string) => void;
   readonly viewer: Viewer | null;

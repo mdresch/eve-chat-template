@@ -37,3 +37,11 @@ export function VercelIcon({ className }: { readonly className?: string }) {
     </svg>
   );
 }
+
+export function AtlassianIcon({ className }: { readonly className?: string }) {
+  return (
+    <svg aria-hidden="true" className={className} fill="currentColor" viewBox="0 0 24 24">
+      <path d="M12.001 0C5.373 0 0 5.373 0 12c0 6.627 5.373 12 12.001 12C18.627 24 24 18.627 24 12c0-6.627-5.373-12-11.999-12zm4.8 17.4c-.6-.6-1.2-.9-1.8-.9s-1.2.3-1.8.9c-.6.6-.9 1.2-.9 1.8s.3 1.2.9 1.8c.6.6 1.2.9 1.8.9s1.2-.3 1.8-.9c.6-.6.9-1.2.9-1.8s-.3-1.2-.9-1.8zm-4.8-7.2c-.6-.6-1.2-.9-1.8-.9s-1.2.3-1.8.9c-.6.6-.9 1.2-.9 1.8s.3 1.2.9 1.8c.6.6 1.2.9 1.8.9s1.2-.3 1.8-.9c.6-.6.9-1.2.9-1.8s-.3-1.2-.9-1.8z" />
+    </svg>
+  );
+}

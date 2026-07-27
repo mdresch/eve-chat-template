@@ -64,6 +64,7 @@ export function AgentChatShell({
     linear: true,
     notion: true,
     sentry: true,
+    atlassian: true,
   });
   const cursorRef = useRef(initialNextCursor);
   const activeChatIdRef = useRef(activeChatId);
@@ -110,13 +111,20 @@ export function AgentChatShell({
   );
 
   const touchChat = useCallback(
-    (chat: Omit<ChatListItem, "status"> & { readonly status?: ChatListItem["status"] }) => {
+    (
+      chat: Omit<ChatListItem, "sandboxContainerName" | "status"> & {
+        readonly sandboxContainerName?: ChatListItem["sandboxContainerName"];
+        readonly status?: ChatListItem["status"];
+      },
+    ) => {
       setHistory((items) => {
         const current = items.find((item) => item.id === chat.id);
 
         return [
           {
             id: chat.id,
+            sandboxContainerName:
+              chat.sandboxContainerName ?? current?.sandboxContainerName ?? null,
             status: chat.status ?? current?.status ?? "ready",
             title: chat.title || current?.title || "New chat",
             updatedAt: chat.updatedAt,

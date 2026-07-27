@@ -1,0 +1,1 @@
+ALTER TABLE "chat" ADD COLUMN "sandbox_container_name" text;

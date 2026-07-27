@@ -11,6 +11,7 @@ export type ChatStatus = "ended" | "generating" | "ready";
 
 export type ChatListItem = {
   readonly id: string;
+  readonly sandboxContainerName: string | null;
   readonly title: string;
   readonly updatedAt: string;
   readonly status: ChatStatus;
@@ -25,6 +26,7 @@ export type ActiveChat = {
   readonly events: readonly HandleMessageStreamEvent[];
   readonly id: string;
   readonly pendingUserMessage: string | null;
+  readonly sandboxContainerName: string | null;
   readonly session: SessionState | undefined;
   readonly title: string;
 };

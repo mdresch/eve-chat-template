@@ -2,6 +2,7 @@
 
 import {
   ArrowRightIcon,
+  ContainerIcon,
   EllipsisIcon,
   PanelLeftIcon,
   PlusIcon,
@@ -20,6 +21,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { ChatListItem, SetupStatus, Viewer } from "@/lib/chat/types";
@@ -138,6 +140,7 @@ export function ChatSidebar({
           <div>
             {chats.map((chat) => {
               const active = activeChatId === chat.id;
+              const sandboxContainerName = chat.sandboxContainerName;
 
               return (
                 <div
@@ -169,6 +172,22 @@ export function ChatSidebar({
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" sideOffset={6}>
+                      {sandboxContainerName ? (
+                        <>
+                          <DropdownMenuItem
+                            onSelect={() => {
+                              void navigator.clipboard.writeText(sandboxContainerName);
+                            }}
+                            title={`Docker sandbox container — click to copy: ${sandboxContainerName}`}
+                          >
+                            <ContainerIcon className="size-4" />
+                            <span className="truncate font-mono text-xs">
+                              {sandboxContainerName}
+                            </span>
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                        </>
+                      ) : null}
                       <DropdownMenuItem
                         onSelect={(event) => {
                           event.preventDefault();

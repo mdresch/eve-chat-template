@@ -103,6 +103,7 @@ export async function listChatsPageByUser(
       id: chat.id,
       pendingUserMessage: chat.pendingUserMessage,
       pendingUserMessageCreatedAt: chat.pendingUserMessageCreatedAt,
+      sandboxContainerName: chat.sandboxContainerName,
       title: chat.title,
       updatedAt: chat.updatedAt,
     })
@@ -129,6 +130,7 @@ export async function listChatsPageByUser(
   return {
     items: pageRows.map((row) => ({
       id: row.id,
+      sandboxContainerName: row.sandboxContainerName,
       status: deriveChatStatus({
         lastEventType: lastEventTypes.get(row.id) ?? null,
         pendingUserMessage: row.pendingUserMessage,
@@ -185,6 +187,7 @@ export async function getChatForUser(chatId: string, userId: string): Promise<Ac
       eveSession: chat.eveSession,
       pendingUserMessage: chat.pendingUserMessage,
       pendingUserMessageCreatedAt: chat.pendingUserMessageCreatedAt,
+      sandboxContainerName: chat.sandboxContainerName,
     })
     .from(chat)
     .where(and(eq(chat.id, chatId), eq(chat.userId, userId)))
@@ -218,6 +221,7 @@ export async function getChatForUser(chatId: string, userId: string): Promise<Ac
     events: eventValues,
     id: row.id,
     pendingUserMessage: hasCurrentTurnCompleted ? null : row.pendingUserMessage,
+    sandboxContainerName: row.sandboxContainerName,
     session: row.eveSession ?? undefined,
     title: row.title,
   };
@@ -364,6 +368,38 @@ export async function skipChatAuthorization({
   };
 }
 
+// For the sandbox idle-cleanup cron: chats aren't scoped to one user here,
+// since this is a system job over every chat with a live sandbox session.
+export async function listIdleChatsWithSandboxSession(idleBefore: Date) {
+  const rows = await db
+    .select({ eveSession: chat.eveSession, id: chat.id })
+    .from(chat)
+    .where(lt(chat.updatedAt, idleBefore));
+
+  return rows
+    .map((row) => ({ chatId: row.id, sessionId: row.eveSession?.sessionId ?? null }))
+    .filter(
+      (row): row is { chatId: string; sessionId: string } => row.sessionId !== null,
+    );
+}
+
+// Called from agent/tools/bash.ts on every bash call, keyed by eve sessionId
+// (not chatId — tool execution only knows the eve session, not this app's
+// chat row). Records the Docker container server-side so the UI has a
+// stable source of truth instead of reconstructing it from message parts.
+export async function recordChatSandboxContainer({
+  containerName,
+  sessionId,
+}: {
+  readonly containerName: string;
+  readonly sessionId: string;
+}) {
+  await db
+    .update(chat)
+    .set({ sandboxContainerName: containerName })
+    .where(sql`${chat.eveSession}->>'sessionId' = ${sessionId}`);
+}
+
 export async function saveChatSessionState({
   chatId,
   session,
@@ -381,17 +417,25 @@ export async function saveChatSessionState({
     .where(and(eq(chat.id, chatId), eq(chat.userId, userId)));
 }
 
-export async function appendChatEvent({
+// Called with a debounced/batched buffer of stream deltas from the client
+// (see persistStreamEvent in agent-chat.tsx) so a single turn's worth of
+// token-level events doesn't turn into one DB round trip per token.
+export async function appendChatEvents({
   chatId,
-  event,
-  eventIndex,
+  events,
   userId,
 }: {
   readonly chatId: string;
-  readonly event: HandleMessageStreamEvent;
-  readonly eventIndex: number;
+  readonly events: readonly {
+    readonly event: HandleMessageStreamEvent;
+    readonly eventIndex: number;
+  }[];
   readonly userId: string;
 }) {
+  if (events.length === 0) {
+    return;
+  }
+
   const [ownedChat] = await db
     .select({ id: chat.id })
     .from(chat)
@@ -404,14 +448,16 @@ export async function appendChatEvent({
 
   await db
     .insert(chatEvent)
-    .values({
-      chatId,
-      event,
-      eventIndex,
-      id: randomUUID(),
-    })
+    .values(
+      events.map(({ event, eventIndex }) => ({
+        chatId,
+        event,
+        eventIndex,
+        id: randomUUID(),
+      })),
+    )
     .onConflictDoUpdate({
-      set: { event },
+      set: { event: sql`excluded.event` },
       target: [chatEvent.chatId, chatEvent.eventIndex],
     });
 }

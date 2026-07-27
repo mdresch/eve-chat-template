@@ -14,9 +14,6 @@ import { defaultMessageReducer, useEveAgent } from "eve/react";
 import {
   AlertCircleIcon,
   ChevronDownIcon,
-  ContainerIcon,
-  CopyCheckIcon,
-  CopyIcon,
   ExternalLinkIcon,
   LockIcon,
   PlugIcon,
@@ -28,13 +25,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   checkModelFallbackNoticeAction,
   checkSendLimitAction,
-  appendChatEventAction,
   clearChatPendingMessageAction,
   createChatAction,
   markChatPendingMessageAction,
-  saveChatSnapshotAction,
   saveChatSessionStateAction,
-  skipChatAuthorizationAction,
 } from "@/app/actions/chat";
 import {
   useChatShell,
@@ -98,6 +92,18 @@ const STREAM_DISCONNECT_RECONNECT_ATTEMPTS = 3;
 const STREAM_IDLE_TIMEOUT_MS = 120_000;
 const STREAM_RECONNECT_DELAY_MS = 350;
 const THINKING_EXIT_DURATION_MS = 180;
+// Live streaming can produce hundreds of deltas per turn; persisting each one
+// as its own request would mean hundreds of round trips. Batch them and flush
+// on this cadence, or immediately once the buffer fills or a turn boundary
+// arrives, so resume-after-refresh still sees fairly fresh history.
+const EVENT_FLUSH_DEBOUNCE_MS = 250;
+const EVENT_FLUSH_MAX_BATCH = 25;
+// useEveAgent's own live stream transport has no idle timeout — it only
+// recovers from a thrown disconnect error. A connection that silently stalls
+// (backgrounded tab throttling, an intermediate proxy holding the socket
+// open) never errors and never progresses, so `agent.status` sticks on
+// "streaming" forever with no recovery path. See the watchdog effect below.
+const LIVE_STREAM_WATCHDOG_POLL_MS = 5_000;
 
 function createPersistedClientSession({
   initialSession,
@@ -575,6 +581,10 @@ function reduceEventsToMessageData(
   return data;
 }
 
+function deriveSandboxContainerName(events: readonly HandleMessageStreamEvent[]) {
+  return findLatestSandboxContainerName(reduceEventsToMessageData(events).messages);
+}
+
 function hasOpenChatTurn(events: readonly HandleMessageStreamEvent[]) {
   let open = false;
 
@@ -587,6 +597,79 @@ function hasOpenChatTurn(events: readonly HandleMessageStreamEvent[]) {
   }
 
   return open;
+}
+
+type ChatEventBatchEntry = {
+  readonly event: HandleMessageStreamEvent;
+  readonly eventIndex: number;
+};
+
+async function postChatEvents(chatId: string, events: readonly ChatEventBatchEntry[]) {
+  if (events.length === 0) {
+    return;
+  }
+
+  const response = await fetch(`/api/chats/${chatId}/events`, {
+    body: JSON.stringify({ events }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+
+    throw new Error(body?.error ?? "Failed to save chat events.");
+  }
+}
+
+// Carries the full chat history (used to reconcile the DB at turn end / after
+// a resume) — same reasoning as postChatEvents for why this is a route
+// handler and not a Server Action.
+async function postChatSnapshot(
+  chatId: string,
+  events: readonly HandleMessageStreamEvent[],
+  session: SessionState,
+) {
+  const response = await fetch(`/api/chats/${chatId}/snapshot`, {
+    body: JSON.stringify({ events, session }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+
+    throw new Error(body?.error ?? "Failed to save chat snapshot.");
+  }
+}
+
+async function postSkipChatAuthorization(
+  chatId: string,
+  events: readonly HandleMessageStreamEvent[],
+  session: SessionState,
+) {
+  const response = await fetch(`/api/chats/${chatId}/skip-authorization`, {
+    body: JSON.stringify({ events, session }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const body = (await response.json().catch(() => null)) as {
+    readonly chat?: { readonly id: string; readonly title: string; readonly updatedAt: string };
+    readonly error?: string;
+    readonly eventCount?: number;
+    readonly eventIndex?: number;
+  } | null;
+
+  if (
+    !response.ok ||
+    !body?.chat ||
+    body.eventCount === undefined ||
+    body.eventIndex === undefined
+  ) {
+    throw new Error(body?.error ?? "Failed to skip authorization.");
+  }
+
+  return { chat: body.chat, eventCount: body.eventCount, eventIndex: body.eventIndex };
 }
 
 function namespaceStreamEvent(
@@ -742,6 +825,10 @@ export function AgentChatSession({
   const resumeStartedRef = useRef(false);
   const resumedEventsRef = useRef<HandleMessageStreamEvent[]>([]);
   const streamEventsRef = useRef<HandleMessageStreamEvent[]>([]);
+  const streamEventKeysRef = useRef<Set<string>>(new Set());
+  const pendingEventBatchRef = useRef<ChatEventBatchEntry[]>([]);
+  const eventFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const lastLiveStreamProgressAtRef = useRef<number | null>(null);
   const localEventsRef = useRef<HandleMessageStreamEvent[]>([]);
   const onSessionStartedRef = useRef<(session: SessionState) => Promise<void> | void>(
     () => {},
@@ -805,11 +892,7 @@ export function AgentChatSession({
           localEventsRef.current,
         );
 
-        await saveChatSnapshotAction({
-          chatId,
-          events,
-          session,
-        });
+        await postChatSnapshot(chatId, events, session);
 
         if (session.sessionId) {
           void checkModelFallbackNoticeAction(session.sessionId).then((provider) => {
@@ -824,6 +907,7 @@ export function AgentChatSession({
         eventIndexRef.current = events.length;
         knownInitialEventsRef.current = events;
         streamEventsRef.current = [];
+        streamEventKeysRef.current = new Set();
         setStreamEvents([]);
 
         if (hasOpenChatTurn(events)) {
@@ -833,8 +917,11 @@ export function AgentChatSession({
           setResumeFailed(true);
         }
 
+        const nextSandboxContainerName = deriveSandboxContainerName(events);
+
         touchChat({
           id: chatId,
+          sandboxContainerName: nextSandboxContainerName,
           status: statusFromSettledEvents(events),
           title: currentTitleRef.current,
           updatedAt: new Date().toISOString(),
@@ -843,6 +930,7 @@ export function AgentChatSession({
           events,
           id: chatId,
           pendingUserMessage: null,
+          sandboxContainerName: nextSandboxContainerName,
           session,
           title: currentTitleRef.current,
         });
@@ -864,8 +952,37 @@ export function AgentChatSession({
     ],
   );
 
+  const flushPendingChatEvents = useCallback(() => {
+    if (eventFlushTimeoutRef.current !== undefined) {
+      clearTimeout(eventFlushTimeoutRef.current);
+      eventFlushTimeoutRef.current = undefined;
+    }
+
+    const batch = pendingEventBatchRef.current;
+
+    if (batch.length === 0) {
+      return;
+    }
+
+    pendingEventBatchRef.current = [];
+
+    const chatId = activeChatIdRef.current;
+
+    if (!chatId) {
+      return;
+    }
+
+    void postChatEvents(chatId, batch).catch((error) => {
+      setClientError(
+        error instanceof Error ? error.message : "Failed to save stream progress.",
+      );
+    });
+  }, []);
+
   const persistStreamEvent = useCallback(
     (event: HandleMessageStreamEvent) => {
+      lastLiveStreamProgressAtRef.current = Date.now();
+
       const displayEvent = namespaceStreamEvent(
         event,
         persistedSessionRef.current?.state.sessionId,
@@ -873,6 +990,7 @@ export function AgentChatSession({
       const nextStreamEvents = appendUniqueStreamEvent(
         streamEventsRef.current,
         displayEvent,
+        streamEventKeysRef.current,
       );
 
       if (nextStreamEvents !== streamEventsRef.current) {
@@ -893,17 +1011,24 @@ export function AgentChatSession({
       const eventIndex = eventIndexRef.current;
       eventIndexRef.current += 1;
 
-      void appendChatEventAction({
-        chatId,
-        event: displayEvent,
-        eventIndex,
-      }).catch((error) => {
-        setClientError(
-          error instanceof Error ? error.message : "Failed to save stream progress.",
-        );
-      });
+      pendingEventBatchRef.current.push({ event: displayEvent, eventIndex });
+
+      if (
+        isChatTurnSettledEvent(displayEvent) ||
+        pendingEventBatchRef.current.length >= EVENT_FLUSH_MAX_BATCH
+      ) {
+        flushPendingChatEvents();
+        return;
+      }
+
+      if (eventFlushTimeoutRef.current === undefined) {
+        eventFlushTimeoutRef.current = setTimeout(() => {
+          eventFlushTimeoutRef.current = undefined;
+          flushPendingChatEvents();
+        }, EVENT_FLUSH_DEBOUNCE_MS);
+      }
     },
-    [stopFinalizingTurn, viewer],
+    [flushPendingChatEvents, stopFinalizingTurn, viewer],
   );
 
   const persistSessionState = useCallback(
@@ -955,10 +1080,14 @@ export function AgentChatSession({
   );
   const displayData = useMemo(() => reduceEventsToMessageData(displayEvents), [displayEvents]);
   const displayMessages = displayData.messages;
-  const sandboxContainerName = useMemo(
+  const derivedSandboxContainerName = useMemo(
     () => findLatestSandboxContainerName(displayMessages),
     [displayMessages],
   );
+  // Prefer the server-recorded value (set by agent/tools/bash.ts, keyed by
+  // eve sessionId) — it's a stable source of truth. The client-derived
+  // fallback only matters mid-turn, before onActiveChatUpdated has caught up.
+  const sandboxContainerName = activeChat?.sandboxContainerName ?? derivedSandboxContainerName;
   const displayChatId = chatId ?? activeChatId ?? "new";
   const hasLocalPendingUserMessage = Boolean(localPendingUserMessage);
   const pendingAuthorizations = getPendingAuthorizations(displayEvents);
@@ -1013,7 +1142,13 @@ export function AgentChatSession({
     resumeStartedRef.current = false;
     resumedEventsRef.current = [];
     streamEventsRef.current = [];
+    streamEventKeysRef.current = new Set();
     localEventsRef.current = [];
+    pendingEventBatchRef.current = [];
+    if (eventFlushTimeoutRef.current !== undefined) {
+      clearTimeout(eventFlushTimeoutRef.current);
+      eventFlushTimeoutRef.current = undefined;
+    }
     setResumedEvents([]);
     setStreamEvents([]);
     setLocalEvents([]);
@@ -1255,11 +1390,7 @@ export function AgentChatSession({
       setClientError(null);
 
       try {
-        const result = await skipChatAuthorizationAction({
-          chatId,
-          events,
-          session: nextSession,
-        });
+        const result = await postSkipChatAuthorization(chatId, events, nextSession);
         const skippedEvents = mergeLocalEvents(displayEvents, events);
 
         eventIndexRef.current = Math.max(
@@ -1268,7 +1399,8 @@ export function AgentChatSession({
         );
         knownInitialEventsRef.current = skippedEvents;
         const nextStreamEvents = events.reduce<HandleMessageStreamEvent[]>(
-          (mergedEvents, event) => appendUniqueStreamEvent(mergedEvents, event),
+          (mergedEvents, event) =>
+            appendUniqueStreamEvent(mergedEvents, event, streamEventKeysRef.current),
           streamEventsRef.current,
         );
 
@@ -1276,11 +1408,19 @@ export function AgentChatSession({
         setStreamEvents(nextStreamEvents);
         localEventsRef.current = [];
         setLocalEvents([]);
-        touchChat({ ...result.chat, status: "ready" });
+
+        const nextSandboxContainerName = deriveSandboxContainerName(skippedEvents);
+
+        touchChat({
+          ...result.chat,
+          sandboxContainerName: nextSandboxContainerName,
+          status: "ready",
+        });
         onActiveChatUpdated?.({
           events: skippedEvents,
           id: chatId,
           pendingUserMessage: null,
+          sandboxContainerName: nextSandboxContainerName,
           session: nextSession,
           title: currentTitleRef.current,
         });
@@ -1322,6 +1462,12 @@ export function AgentChatSession({
   }, [activeChatId]);
 
   useEffect(() => {
+    return () => {
+      flushPendingChatEvents();
+    };
+  }, [flushPendingChatEvents]);
+
+  useEffect(() => {
     const nextChatId = activeChat?.id ?? chatId ?? null;
     const nextTitle = activeChat?.title ?? "New chat";
     const nextEventIndex = activeChat?.events.length ?? 0;
@@ -1333,7 +1479,13 @@ export function AgentChatSession({
       eventIndexRef.current = nextEventIndex;
       knownInitialEventsRef.current = activeChat?.events ?? [];
       streamEventsRef.current = [];
+      streamEventKeysRef.current = new Set();
       localEventsRef.current = [];
+      pendingEventBatchRef.current = [];
+      if (eventFlushTimeoutRef.current !== undefined) {
+        clearTimeout(eventFlushTimeoutRef.current);
+        eventFlushTimeoutRef.current = undefined;
+      }
       setStreamEvents([]);
       setLocalEvents([]);
       stopFinalizingTurn();
@@ -1417,11 +1569,9 @@ export function AgentChatSession({
           resumedEventsRef.current = nextEvents;
           setResumedEvents(nextEvents);
 
-          await appendChatEventAction({
-            chatId: activeChat.id,
-            event: displayEvent,
-            eventIndex: startIndex + nextEvents.length - 1,
-          });
+          await postChatEvents(activeChat.id, [
+            { event: displayEvent, eventIndex: startIndex + nextEvents.length - 1 },
+          ]);
 
           if (isChatTurnSettledEvent(event)) {
             break;
@@ -1446,17 +1596,17 @@ export function AgentChatSession({
           return;
         }
 
-        await saveChatSnapshotAction({
-          chatId: activeChat.id,
-          events: allEvents,
-          session: session.state,
-        });
+        await postChatSnapshot(activeChat.id, allEvents, session.state);
         eventIndexRef.current = allEvents.length;
         knownInitialEventsRef.current = allEvents;
         resumedEventsRef.current = [];
         setResumedEvents([]);
+
+        const nextSandboxContainerName = deriveSandboxContainerName(allEvents);
+
         touchChat({
           id: activeChat.id,
+          sandboxContainerName: nextSandboxContainerName,
           status: statusFromSettledEvents(allEvents),
           title: currentTitleRef.current,
           updatedAt: new Date().toISOString(),
@@ -1465,6 +1615,7 @@ export function AgentChatSession({
           events: allEvents,
           id: activeChat.id,
           pendingUserMessage: null,
+          sandboxContainerName: nextSandboxContainerName,
           session: session.state,
           title: currentTitleRef.current,
         });
@@ -1514,6 +1665,34 @@ export function AgentChatSession({
     resumeStartedRef.current = false;
     setRetryTick((tick) => tick + 1);
   }, []);
+
+  useEffect(() => {
+    const isLiveStreaming = agent.status === "submitted" || agent.status === "streaming";
+
+    if (!isLiveStreaming) {
+      lastLiveStreamProgressAtRef.current = null;
+      return;
+    }
+
+    lastLiveStreamProgressAtRef.current ??= Date.now();
+
+    const interval = window.setInterval(() => {
+      const lastProgressAt = lastLiveStreamProgressAtRef.current;
+
+      // A stalled live stream (backgrounded-tab throttling, a proxy holding
+      // the socket open with no data) never errors and never progresses, so
+      // agent.status sticks on "streaming" forever with no recovery path.
+      // Reloading is what already works when a user manually refreshes: it
+      // forces a fresh fetch of the chat, which by then has the complete
+      // server-persisted turn (the durable run keeps going independent of
+      // this browser tab's connection to it).
+      if (lastProgressAt !== null && Date.now() - lastProgressAt >= STREAM_IDLE_TIMEOUT_MS) {
+        window.location.reload();
+      }
+    }, LIVE_STREAM_WATCHDOG_POLL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [agent.status]);
 
   useEffect(() => {
     currentTitleRef.current = currentTitle;
@@ -1856,9 +2035,10 @@ function mergeStreamEventLogs(
   }
 
   let merged: HandleMessageStreamEvent[] = [...events];
+  const seenKeys = new Set(merged.map(getStreamEventSignature));
 
   for (const event of streamedEvents) {
-    const next = appendUniqueStreamEvent(merged, event);
+    const next = appendUniqueStreamEvent(merged, event, seenKeys);
 
     if (next !== merged) {
       merged = next;
@@ -1871,12 +2051,21 @@ function mergeStreamEventLogs(
 function appendUniqueStreamEvent(
   events: readonly HandleMessageStreamEvent[],
   event: HandleMessageStreamEvent,
+  seenKeys: Set<string>,
 ): HandleMessageStreamEvent[] {
-  if (events.some((existingEvent) => areSameStreamEvent(existingEvent, event))) {
+  const key = getStreamEventSignature(event);
+
+  if (seenKeys.has(key)) {
     return events as HandleMessageStreamEvent[];
   }
 
+  seenKeys.add(key);
+
   return [...events, event];
+}
+
+function getStreamEventSignature(event: HandleMessageStreamEvent): string {
+  return JSON.stringify(event);
 }
 
 function preserveKnownInitialEvents(
@@ -2040,6 +2229,7 @@ const CONNECTION_LABELS = {
   linear: "Linear",
   notion: "Notion",
   sentry: "Sentry",
+  atlassian: "Atlassian",
 } satisfies Record<keyof EnabledConnections, string>;
 
 function createConnectionClientContext(enabledConnections: EnabledConnections) {
@@ -2115,40 +2305,43 @@ function ThinkingMessage({ isVisible }: { readonly isVisible: boolean }) {
 }
 
 function SessionHeader({ containerName }: { readonly containerName: string | null }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => setCopied(false), 1500);
-
-    return () => window.clearTimeout(timeout);
-  }, [copied]);
-
   if (!containerName) {
     return <div className="h-12 shrink-0" />;
   }
 
+  // Undocumented: the VS Code team has confirmed `code --folder-uri
+  // vscode-remote://attached-container+<name>/<path>` attaches to an already
+  // running container (github.com/microsoft/vscode-remote-release#5867), but
+  // called it "not officially supported." This is the equivalent clickable
+  // vscode:// deep link. If it doesn't open VS Code on your machine, use
+  // "Dev Containers: Attach to Running Container..." from the command
+  // palette instead, and paste the container name from a `docker ps`.
+  const vsCodeAttachHref = `vscode://vscode-remote/attached-container+${encodeURIComponent(containerName)}/workspace`;
+
+  // pt-14/md:pt-8 mirrors EmptyChatBody's offset — it clears the shell's
+  // absolutely-positioned top bar (share button, sidebar toggle) so this
+  // button renders just below it instead of overlapping in the same corner.
   return (
-    <div className="flex h-12 shrink-0 items-center justify-end px-3">
-      <button
-        className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-        onClick={() => {
-          void navigator.clipboard.writeText(containerName).then(() => setCopied(true));
-        }}
-        title={`Docker sandbox container — click to copy: ${containerName}`}
-        type="button"
-      >
-        <ContainerIcon className="size-3" />
-        <span className="max-w-40 truncate">{containerName}</span>
-        {copied ? (
-          <CopyCheckIcon className="size-3 text-emerald-500" />
-        ) : (
-          <CopyIcon className="size-3" />
-        )}
-      </button>
+    <div className="flex shrink-0 items-center justify-end px-3 pt-14 pb-2 md:pt-8">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            asChild
+            aria-label="Open in VS Code"
+            className="text-muted-foreground hover:text-foreground"
+            size="icon-sm"
+            variant="ghost"
+          >
+            <a href={vsCodeAttachHref}>
+              <ExternalLinkIcon className="size-4" />
+            </a>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          Open <span className="font-mono">{containerName}</span> in VS Code — unofficial deep
+          link, requires the Dev Containers extension
+        </TooltipContent>
+      </Tooltip>
     </div>
   );
 }

@@ -387,15 +387,20 @@ The app persists at two moments:
 
 ### Event-By-Event Persistence
 
-`persistStreamEvent(event)` writes each event through:
+`persistStreamEvent(event)` buffers each event and flushes the buffer through
+a `POST /api/chats/[id]/events` route handler (not a Server Action — a Server
+Action bound to the chat page would re-render that page's Server Components,
+including the full event history, after every call, and its request body is
+capped at 1 MB):
 
 ```ts
-appendChatEventAction({
-  chatId,
-  event,
-  eventIndex,
-});
+postChatEvents(chatId, [{ event, eventIndex }, ...]);
 ```
+
+The buffer flushes on a short debounce (`EVENT_FLUSH_DEBOUNCE_MS`), or
+immediately once it hits `EVENT_FLUSH_MAX_BATCH` entries or a turn-boundary
+event arrives (`isChatTurnSettledEvent`). This turns what would be one write
+per token into a handful of small batched writes per turn.
 
 `eventIndex` is a local monotonic counter for the current chat. The database has
 a unique index on `(chatId, eventIndex)`, and writes use conflict updates so
@@ -413,7 +418,12 @@ The snapshot includes:
 - the full reduced event list known by eve React
 - the current eve `SessionState`
 
-The template calls `saveChatSnapshotAction({ chatId, events, session })`.
+The template calls `postChatSnapshot(chatId, events, session)`, which
+`POST`s to `/api/chats/[id]/snapshot`. This carries the full event history, so
+like the per-event route it's a plain route handler rather than a Server
+Action — a Server Action bound to the chat page would both re-render that
+page's Server Components on every call and cap the request body at 1 MB,
+which a growing conversation's full history would eventually exceed.
 
 `saveChatSnapshot` upserts each event by index, deletes any events past the new
 snapshot length, saves the eve session state, clears `pendingUserMessage`, and
@@ -542,7 +552,9 @@ Skip is a local way to end the authorization wait without connecting the service
 2. Creates an `authorization.completed` event with outcome `declined`.
 3. Creates a local `session.waiting` event.
 4. Applies those events to the persisted browser session.
-5. Saves them through `skipChatAuthorizationAction`.
+5. Saves them through `postSkipChatAuthorization`, which `POST`s to
+   `/api/chats/[id]/skip-authorization` (a route handler, not a Server
+   Action — same reasoning as the event and snapshot routes above).
 6. Clears pending user message state.
 
 That means "skip" ends the current turn. The next normal user message should

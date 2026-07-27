@@ -1,4 +1,4 @@
-import * as Sentry from "@sentry/nextjs";
+import Sentry from "@sentry/nextjs";
 import { defineAgent, defineDynamic } from "eve";
 import { buildModelFromCredential } from "@/agent/model-config";
 import { getUserModelPreference, getUserProviderCredential } from "@/lib/db/queries";

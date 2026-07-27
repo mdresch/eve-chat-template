@@ -1,4 +1,4 @@
-import * as Sentry from "@sentry/nextjs";
+import Sentry from "@sentry/nextjs";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
