@@ -3,7 +3,8 @@ import { stopIdleSandboxContainers } from "@/lib/sandbox/idle-cleanup";
 
 const IDLE_THRESHOLD_MS = 30 * 60 * 1000;
 
-// Triggered by Vercel Cron (see vercel.json). Stops the Docker sandbox
+// Triggered by an Upstash QStash schedule (Vercel Hobby plans cap Cron Jobs
+// at once/day, too infrequent for idle cleanup). Stops the Docker sandbox
 // container for any chat that's been idle past the threshold, so containers
 // don't accumulate indefinitely. Never removes a container: eve reconnects
 // to a stopped one by name on the chat's next turn, so this only reclaims

@@ -193,9 +193,10 @@ MODEL_KEY_ENCRYPTION_SECRET=
 # Required for the web_search tool. Get a key at https://exa.ai
 EXA_API_KEY=
 
-# Required for the sandbox idle-cleanup cron (vercel.json). Set it here and
-# on the Vercel project — Vercel then sends it automatically as the Cron
-# Job's bearer token.
+# Required for the sandbox idle-cleanup cron. Vercel Hobby plans cap Cron
+# Jobs at once/day, so this project schedules the call via an Upstash QStash
+# schedule instead — set it here and configure the QStash schedule's request
+# to send this value as `Authorization: Bearer <CRON_SECRET>`.
 CRON_SECRET=
 ```
 

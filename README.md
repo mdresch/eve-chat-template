@@ -92,8 +92,9 @@ SHORTCUT_CONNECTOR=
 # Enables agent/tools/web_search.ts. Get a key at https://exa.ai
 EXA_API_KEY=
 
-# Authenticates the sandbox idle-cleanup cron (see vercel.json). Set it on
-# the Vercel project too so Vercel Cron sends it automatically.
+# Authenticates the sandbox idle-cleanup cron. Vercel Hobby plans cap Cron
+# Jobs at once/day, so this runs via an Upstash QStash schedule instead —
+# configure it to send this value as `Authorization: Bearer <CRON_SECRET>`.
 CRON_SECRET=
 ```
 

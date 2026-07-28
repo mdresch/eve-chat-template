@@ -87,24 +87,24 @@ Sandbox containers stay around after a turn ends so the next turn in the same
 chat can resume the same filesystem. Left unchecked, that accumulates
 containers indefinitely, so a cron job stops (never removes) idle ones.
 
-`vercel.json` schedules it:
+This project schedules it with an [Upstash QStash](https://upstash.com/docs/qstash)
+Schedule rather than Vercel Cron: Vercel Hobby plans cap Cron Jobs at
+once/day, too infrequent for idle cleanup. Create a Schedule in the Upstash
+console with:
 
-```json
-{
-  "crons": [{ "path": "/api/cron/sandbox-cleanup", "schedule": "*/15 * * * *" }]
-}
-```
+- Destination: `https://<your-production-domain>/api/cron/sandbox-cleanup`
+- Method: `GET`
+- Cron expression: `*/15 * * * *`
+- Header: `Authorization: Bearer <CRON_SECRET>`
 
-`app/api/cron/sandbox-cleanup/route.ts` requires a matching bearer token:
+`app/api/cron/sandbox-cleanup/route.ts` checks for that same header on every
+request:
 
 ```txt
 Authorization: Bearer <CRON_SECRET>
 ```
 
-Vercel automatically sends `CRON_SECRET` as that bearer token for its own
-Cron Jobs once the env var is set on the project — see
-[Vercel Cron Jobs](https://vercel.com/docs/cron-jobs). Requests without a
-matching header get a 401.
+Requests without a matching header get a 401.
 
 The route calls `stopIdleSandboxContainers` (`lib/sandbox/idle-cleanup.ts`)
 with a 30-minute idle threshold:
@@ -135,8 +135,8 @@ CRON_SECRET=
 ```
 
 Required for the idle-cleanup cron to authenticate. Set it in this app's own
-environment; if deployed on Vercel, also set it on the Vercel project so
-Vercel Cron sends it automatically as the request's bearer token.
+environment, and configure the Upstash QStash schedule's request to send it
+as the `Authorization: Bearer <CRON_SECRET>` header.
 
 ## Local Development
 
