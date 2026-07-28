@@ -27,6 +27,7 @@
     "@ai-sdk/google": "^4.0.21",
     "@ai-sdk/mistral": "^4.0.14",
     "@ai-sdk/openai-compatible": "^3.0.14",
+    "@github-tools/eve-extension": "^0.1.0",
     "@neondatabase/serverless": "1.0.2",
     "@sentry/nextjs": "^10.67.0",
     "@shikijs/core": "4.1.0",
@@ -37,17 +38,18 @@
     "@streamdown/math": "1.0.2",
     "@streamdown/mermaid": "1.0.2",
     "@tailwindcss/postcss": "4.3.0",
+    "@upstash/agentkit-eve-extension": "^0.4.0",
     "@upstash/redis": "1.38.0",
     "@vercel/analytics": "2.0.1",
     "@vercel/connect": "0.2.4",
     "@vercel/speed-insights": "2.0.0",
-    "ai": "7.0.0-canary.171",
+    "ai": "^7.0.37",
     "better-auth": "1.5.5",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "drizzle-orm": "0.45.1",
-    "eve": "^0.22.1",
+    "eve": "^0.27.6",
     "lucide-react": "1.16.0",
     "next": "16.2.6",
     "radix-ui": "1.4.3",
@@ -69,5 +71,10 @@
     "drizzle-kit": "0.31.9",
     "microsandbox": "^0.5.7",
     "typescript": "5.9.3"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "eve@0.27.6": "patches/eve@0.27.6.patch"
+    }
   }
 }

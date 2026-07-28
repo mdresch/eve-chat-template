@@ -10,6 +10,13 @@ to Postgres as they arrive, keeps an eve session cursor so interrupted streams
 can resume, and uses a static Next.js shell so the sidebar and composer do not
 thrash during route navigation.
 
+This document covers the chat runtime end to end. For deeper coverage of
+specific features, see [Per-User AI Providers](byok-model-providers.md),
+[Sandboxed Code Execution](sandboxed-code-execution.md), the
+[PMBOK Specialist Subagent](pmbok-specialist-subagent.md),
+[Agent Tools And Skills](agent-tools-and-skills.md), and
+[Observability](observability.md).
+
 ## Main Pieces
 
 The template has four major layers:
@@ -29,6 +36,8 @@ Important files:
 | `agent/connections/notion.ts` | Defines the Notion MCP connection through Vercel Connect. |
 | `agent/connections/linear.ts` | Defines the Linear MCP connection through Vercel Connect. |
 | `agent/connections/sentry.ts` | Defines the Sentry MCP connection through Vercel Connect. |
+| `agent/connections/atlassian.ts` | Defines the Atlassian MCP connection through Vercel Connect. |
+| `agent/connections/shortcut.ts` | Defines the Shortcut MCP connection through Vercel Connect. |
 | `next.config.ts` | Wraps the app with `withEve(nextConfig)`, which mounts the `/eve/v1/*` routes. |
 | `app/(chat)/layout.tsx` | Renders the static chat shell immediately, then streams viewer/setup/sidebar data through Suspense. |
 | `app/(chat)/page.tsx` | Root chat screen. Creates a new chat row and navigates into `/chat/[id]`. |
@@ -191,6 +200,13 @@ through:
 - `touchChat(chat)`
 - `removeChat(chatId)`
 - `updateChatTitle(chatId, title)`
+
+Each sidebar row also renders a `ChatStatusDot` (`components/chat/sidebar.tsx`)
+showing that chat's derived status: amber while generating, red once a
+pending message has gone stale without a settled event ("ended"), otherwise
+green ("ready"). The status is computed server-side by `deriveChatStatus`
+(`lib/db/queries.ts`) from `pendingUserMessage`/`pendingUserMessageCreatedAt`
+and the chat's last event type — it is not read from eve directly.
 
 ## Root Page Flow
 
@@ -565,11 +581,11 @@ start a fresh turn with the updated context.
 The composer footer contains `ComposerFooterControls`, which renders
 `IntegrationsMenu`.
 
-Right now the only user-visible connection toggle is Notion. The toggle state is
-kept in `AgentChatShell` as:
+The user-visible connection toggles are Notion, Linear, Sentry, Atlassian, and
+Shortcut. The toggle state is kept in `AgentChatShell` as:
 
 ```ts
-enabledConnections = { notion: true }
+enabledConnections = { notion: true, linear: true, sentry: true, atlassian: true, shortcut: true }
 ```
 
 When a message is sent, the app passes a natural-language `clientContext` to
@@ -579,9 +595,10 @@ eve:
 createConnectionClientContext(enabledConnections)
 ```
 
-If a connection is enabled, the context tells eve which of Notion, Linear, and
-Sentry the user enabled for this turn. Disabled connections are called out so
-the model does not use them unless the user enables them first.
+If a connection is enabled, the context tells eve which of Notion, Linear,
+Sentry, Atlassian, and Shortcut the user enabled for this turn. Disabled
+connections are called out so the model does not use them unless the user
+enables them first.
 
 This toggle does not provision, create, or revoke a Vercel Connect connector. It
 only controls per-turn agent behavior.
@@ -599,10 +616,11 @@ export default defineMcpClientConnection({
 });
 ```
 
-For production, set `NOTION_CONNECTOR`, `LINEAR_CONNECTOR`, and
-`SENTRY_CONNECTOR` to the returned Vercel Connect connector UIDs. For local
-development, connectors created with `--name notion`, `--name linear`, and
-`--name sentry` match the fallback names.
+For production, set `NOTION_CONNECTOR`, `LINEAR_CONNECTOR`, `SENTRY_CONNECTOR`,
+`ATLASSIAN_CONNECTOR`, and `SHORTCUT_CONNECTOR` to the returned Vercel Connect
+connector UIDs. For local development, connectors created with `--name notion`,
+`--name linear`, `--name sentry`, `--name atlassian`, and `--name shortcut`
+match the fallback names.
 
 ## Auth
 

@@ -2,7 +2,7 @@
 
 import type { ComponentType } from "react";
 import { HammerIcon } from "lucide-react";
-import { LinearIcon, NotionIcon, SentryIcon, AtlassianIcon } from "@/components/icons";
+import { LinearIcon, NotionIcon, SentryIcon, AtlassianIcon, ShortcutIcon } from "@/components/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +24,7 @@ const CONNECTION_ITEMS: readonly ConnectionItem[] = [
   { key: "linear", label: "Linear", Icon: LinearIcon },
   { key: "sentry", label: "Sentry", Icon: SentryIcon },
   { key: "atlassian", label: "Atlassian", Icon: AtlassianIcon },
+  { key: "shortcut", label: "Shortcut", Icon: ShortcutIcon },
 ];
 
 export function IntegrationsMenu({

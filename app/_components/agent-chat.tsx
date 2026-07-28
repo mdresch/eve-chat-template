@@ -104,6 +104,12 @@ const EVENT_FLUSH_MAX_BATCH = 25;
 // open) never errors and never progresses, so `agent.status` sticks on
 // "streaming" forever with no recovery path. See the watchdog effect below.
 const LIVE_STREAM_WATCHDOG_POLL_MS = 5_000;
+// agent/sandbox.ts's onSession records the container name server-side as
+// soon as the sandbox opens, but nothing pushes that to the client mid-turn
+// — the client otherwise only re-learns it at a turn boundary. Poll for it
+// while a turn is open and we don't have a name yet, so the sidebar/header
+// icon can appear well before the turn finishes.
+const SANDBOX_POLL_INTERVAL_MS = 4_000;
 
 function createPersistedClientSession({
   initialSession,
@@ -808,6 +814,9 @@ export function AgentChatSession({
   const [isFinalizingTurn, setIsFinalizingTurn] = useState(false);
   const [streamEvents, setStreamEvents] = useState<HandleMessageStreamEvent[]>([]);
   const [localEvents, setLocalEvents] = useState<HandleMessageStreamEvent[]>([]);
+  const [polledSandboxContainerName, setPolledSandboxContainerName] = useState<string | null>(
+    null,
+  );
   const {
     clearMessage: clearLocalPendingUserMessage,
     message: localPendingUserMessage,
@@ -1084,10 +1093,12 @@ export function AgentChatSession({
     () => findLatestSandboxContainerName(displayMessages),
     [displayMessages],
   );
-  // Prefer the server-recorded value (set by agent/tools/bash.ts, keyed by
-  // eve sessionId) — it's a stable source of truth. The client-derived
-  // fallback only matters mid-turn, before onActiveChatUpdated has caught up.
-  const sandboxContainerName = activeChat?.sandboxContainerName ?? derivedSandboxContainerName;
+  // Prefer the server-recorded value (set by agent/sandbox.ts's onSession and
+  // agent/tools/bash.ts, keyed by eve sessionId) — it's a stable source of
+  // truth. The client-derived fallback only matters mid-turn, before
+  // onActiveChatUpdated or the poll below has caught up.
+  const sandboxContainerName =
+    activeChat?.sandboxContainerName ?? polledSandboxContainerName ?? derivedSandboxContainerName;
   const displayChatId = chatId ?? activeChatId ?? "new";
   const hasLocalPendingUserMessage = Boolean(localPendingUserMessage);
   const pendingAuthorizations = getPendingAuthorizations(displayEvents);
@@ -1099,6 +1110,57 @@ export function AgentChatSession({
     (!isWaitingForAuthorization &&
       (hasOpenTurn || agent.status === "submitted" || agent.status === "streaming"));
   const isTurnBlocked = isBusy || isFinalizingTurn;
+
+  useEffect(() => {
+    if (sandboxContainerName || !hasOpenTurn) {
+      return;
+    }
+
+    const chatIdForPoll = activeChatIdRef.current;
+
+    if (!chatIdForPoll) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/chats/${encodeURIComponent(chatIdForPoll)}`);
+
+        if (!response.ok || cancelled) {
+          return;
+        }
+
+        const data = (await response.json()) as { readonly chat: ActiveChat | null };
+        const nextSandboxContainerName = data.chat?.sandboxContainerName ?? null;
+
+        if (cancelled || !nextSandboxContainerName) {
+          return;
+        }
+
+        setPolledSandboxContainerName(nextSandboxContainerName);
+        touchChat({
+          id: chatIdForPoll,
+          sandboxContainerName: nextSandboxContainerName,
+          title: currentTitleRef.current,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch {
+        // Best-effort — the interval below retries.
+      }
+    };
+
+    void poll();
+
+    const interval = setInterval(() => void poll(), SANDBOX_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [hasOpenTurn, sandboxContainerName, touchChat]);
+
   const pendingMessage = pendingUserMessage
     ? createPendingUserMessage(displayChatId, pendingUserMessage)
     : null;
@@ -1152,6 +1214,7 @@ export function AgentChatSession({
     setResumedEvents([]);
     setStreamEvents([]);
     setLocalEvents([]);
+    setPolledSandboxContainerName(null);
     stopFinalizingTurn();
     clearLocalPendingUserMessage();
     setIsResuming(false);
@@ -1368,7 +1431,10 @@ export function AgentChatSession({
         return;
       }
 
-      const events = createAuthorizationDeclinedEvents(authorization);
+      const events = createAuthorizationDeclinedEvents(
+        authorization,
+        persistedSessionRef.current?.state.continuationToken ?? "",
+      );
       const persistedSession = persistedSessionRef.current;
 
       if (!persistedSession?.state.sessionId) {
@@ -1488,6 +1554,7 @@ export function AgentChatSession({
       }
       setStreamEvents([]);
       setLocalEvents([]);
+      setPolledSandboxContainerName(null);
       stopFinalizingTurn();
       clearLocalPendingUserMessage();
     } else if (!isTurnBlocked) {
@@ -1953,6 +2020,7 @@ function TurnRetryPrompt({ onRetry }: { readonly onRetry: () => void }) {
 
 function createAuthorizationDeclinedEvents(
   authorization: PendingConnectionAuthorization,
+  continuationToken: string,
 ): readonly HandleMessageStreamEvent[] {
   return [
     {
@@ -1967,13 +2035,18 @@ function createAuthorizationDeclinedEvents(
       },
       type: "authorization.completed",
     },
-    createSessionWaitingEvent(),
+    createSessionWaitingEvent(continuationToken),
   ];
 }
 
-function createSessionWaitingEvent(): HandleMessageStreamEvent {
+// advanceBrowserSession (below) always resolves the real continuation token
+// from session state, never from this event's `data.continuationToken` — the
+// field only exists to satisfy eve's wire-protocol shape for a locally
+// synthesized `session.waiting` event.
+function createSessionWaitingEvent(continuationToken: string): HandleMessageStreamEvent {
   return {
     data: {
+      continuationToken,
       wait: "next-user-message",
     },
     meta: {
@@ -2230,6 +2303,7 @@ const CONNECTION_LABELS = {
   notion: "Notion",
   sentry: "Sentry",
   atlassian: "Atlassian",
+  shortcut: "Shortcut",
 } satisfies Record<keyof EnabledConnections, string>;
 
 function createConnectionClientContext(enabledConnections: EnabledConnections) {

@@ -173,6 +173,40 @@ printf '%s' "https://<your-custom-domain>" | vercel env add BETTER_AUTH_URL prod
 
 `VERCEL_PROJECT_PRODUCTION_URL` and `VERCEL_URL` are Vercel system env vars. See [system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables).
 
+## Feature Environment Variables
+
+A few env vars gate specific features rather than the app's core setup
+readiness. The app will still run without them, but the corresponding
+feature degrades or errors:
+
+```bash
+# Required. The root agent's static fallback model and every subagent under
+# agent/subagents/ call Anthropic directly, regardless of per-user provider
+# settings. Get a key at https://console.anthropic.com
+ANTHROPIC_API_KEY=
+
+# Required for the /settings page (per-user AI providers / BYOK): encrypts
+# stored provider API keys at rest. Generate with `openssl rand -base64 32`.
+# Rotating this secret invalidates every already-stored provider key.
+MODEL_KEY_ENCRYPTION_SECRET=
+
+# Required for the web_search tool. Get a key at https://exa.ai
+EXA_API_KEY=
+
+# Required for the sandbox idle-cleanup cron (vercel.json). Set it here and
+# on the Vercel project — Vercel then sends it automatically as the Cron
+# Job's bearer token.
+CRON_SECRET=
+```
+
+Add each with `vercel env add <NAME> production preview development`, then
+`vercel env pull .env.local --yes` as usual.
+
+See [Per-User AI Providers](byok-model-providers.md),
+[Agent Tools And Skills](agent-tools-and-skills.md#required-environment-variable),
+and [Sandboxed Code Execution](sandboxed-code-execution.md#required-environment-variable)
+for what each of these unlocks.
+
 ## Database Migrations
 
 Run production migrations after the first deployment and after any schema change:
@@ -225,7 +259,7 @@ Open the matching local URL and make sure the Vercel App contains the same callb
 
 ## Optional Vercel Connect Integrations
 
-Slack, Notion, Linear, and Sentry are optional and are not part of the required deploy button flow.
+Slack, Notion, Linear, Sentry, Atlassian, and Shortcut are optional and are not part of the required deploy button flow.
 
 Create any connectors you want to use:
 
@@ -238,6 +272,8 @@ vercel connect attach <slack-connector-uid> --triggers --trigger-path /eve/v1/sl
 vercel connect create mcp.notion.com --name notion
 vercel connect create https://mcp.linear.app/mcp --name linear
 vercel connect create https://mcp.sentry.dev/mcp --name sentry
+vercel connect create https://mcp.atlassian.com/v1/mcp/authv2 --name atlassian
+vercel connect create https://mcp.shortcut.com/mcp --name shortcut
 ```
 
 Attach it to the linked Vercel project if needed:
@@ -253,10 +289,12 @@ printf '%s' "<slack-connector-uid>" | vercel env add SLACK_CONNECTOR production 
 printf '%s' "<connector-uid>" | vercel env add NOTION_CONNECTOR production preview development
 printf '%s' "<connector-uid>" | vercel env add LINEAR_CONNECTOR production preview development
 printf '%s' "<connector-uid>" | vercel env add SENTRY_CONNECTOR production preview development
+printf '%s' "<connector-uid>" | vercel env add ATLASSIAN_CONNECTOR production preview development
+printf '%s' "<connector-uid>" | vercel env add SHORTCUT_CONNECTOR production preview development
 vercel env pull .env.local --yes
 ```
 
-For local development, the connections fall back to `slack/eve-chat-template`, `notion`, `linear`, and `sentry`, so local connectors created with the names above can work without editing files under `agent/`.
+For local development, the connections fall back to `slack/eve-chat-template`, `notion`, `linear`, `sentry`, `atlassian`, and `shortcut`, so local connectors created with the names above can work without editing files under `agent/`.
 
 If a chat requires MCP authorization, use the Connect card in the chat UI. If you want to manage a connector directly, open the project integrations/settings page in Vercel and find the connector.
 

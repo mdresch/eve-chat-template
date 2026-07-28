@@ -2,6 +2,7 @@ import { Suspense, type ReactNode } from "react";
 import { AgentChatBootstrapSync } from "@/app/_components/agent-chat-bootstrap-sync";
 import { AgentChatShell } from "@/app/_components/agent-chat-shell";
 import { listChatsPageByUser } from "@/lib/db/queries";
+import { canPullFromVercel, getMissingVercelManagedEnv } from "@/lib/env-check";
 import { getServerViewer } from "@/lib/session";
 import { getInitialSetupStatus, getSetupStatus } from "@/lib/setup";
 
@@ -13,6 +14,8 @@ export default function ChatLayout({ children }: { readonly children: ReactNode 
       initialChats={[]}
       initialNextCursor={null}
       setupStatus={setupStatus}
+      vercelEnvCanPull={canPullFromVercel()}
+      vercelEnvMissing={getMissingVercelManagedEnv()}
       viewer={null}
     >
       {children}

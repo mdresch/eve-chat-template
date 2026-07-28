@@ -24,6 +24,7 @@ import {
 import { AuthDisplayLoggedOut } from "@/components/auth/auth-display";
 import { SignInModal } from "@/components/auth/sign-in-modal";
 import { ChatSidebar } from "@/components/chat/sidebar";
+import { VercelEnvBanner } from "@/components/chat/vercel-env-banner";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -40,12 +41,16 @@ export function AgentChatShell({
   initialChats,
   initialNextCursor,
   setupStatus,
+  vercelEnvCanPull,
+  vercelEnvMissing,
   viewer,
 }: {
   readonly children: ReactNode;
   readonly initialChats: readonly ChatListItem[];
   readonly initialNextCursor: string | null;
   readonly setupStatus: SetupStatus;
+  readonly vercelEnvCanPull: boolean;
+  readonly vercelEnvMissing: readonly string[];
   readonly viewer: Viewer | null;
 }) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -65,6 +70,7 @@ export function AgentChatShell({
     notion: true,
     sentry: true,
     atlassian: true,
+    shortcut: true,
   });
   const cursorRef = useRef(initialNextCursor);
   const activeChatIdRef = useRef(activeChatId);
@@ -358,6 +364,8 @@ export function AgentChatShell({
             </div>
             {topRightActions}
           </div>
+
+          <VercelEnvBanner canPull={vercelEnvCanPull} missing={vercelEnvMissing} />
 
           {children}
         </main>

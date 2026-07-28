@@ -8,6 +8,7 @@ export type EnabledConnections = {
   readonly notion: boolean;
   readonly sentry: boolean;
   readonly atlassian: boolean;
+  readonly shortcut: boolean;
 };
 
 type ChatShellContextValue = {

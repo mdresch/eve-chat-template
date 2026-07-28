@@ -183,17 +183,14 @@ function AssistantTextPart({
   readonly text: string;
 }) {
   const smoothedText = useStreamingText(text, showCaret, streamKey);
-  const isRevealActive = smoothedText.length > 0 && (showCaret || smoothedText !== text);
   const showVisibleCaret = showCaret && smoothedText.length > 0;
 
   return (
-    <Markdown
-      animated={isRevealActive ? { duration: 0, stagger: 0 } : undefined}
-      caret={showVisibleCaret ? "block" : undefined}
-      isAnimating={isRevealActive}
-    >
-      {smoothedText}
-    </Markdown>
+    // No `animated`/`isAnimating` here: useStreamingText above already does
+    // our own incremental reveal, so layering Streamdown's own per-word
+    // animation on top double-animates already-incremental text and can
+    // spiral into "Maximum update depth exceeded" under fast/long streams.
+    <Markdown caret={showVisibleCaret ? "block" : undefined}>{smoothedText}</Markdown>
   );
 }
 

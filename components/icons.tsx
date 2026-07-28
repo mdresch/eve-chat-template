@@ -45,3 +45,14 @@ export function AtlassianIcon({ className }: { readonly className?: string }) {
     </svg>
   );
 }
+
+export function ShortcutIcon({ className }: { readonly className?: string }) {
+  // Simplified placeholder mark (a rounded diamond), not the official
+  // Shortcut logomark — swap in the exact brand SVG if pixel-accurate
+  // branding is required here.
+  return (
+    <svg aria-hidden="true" className={className} fill="currentColor" viewBox="0 0 24 24">
+      <rect x="5" y="5" width="14" height="14" rx="4" transform="rotate(45 12 12)" />
+    </svg>
+  );
+}

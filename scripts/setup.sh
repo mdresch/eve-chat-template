@@ -260,6 +260,8 @@ setup_optional_slack_connector
 setup_optional_mcp_connector "Notion" NOTION_CONNECTOR mcp.notion.com notion
 setup_optional_mcp_connector "Linear" LINEAR_CONNECTOR https://mcp.linear.app/mcp linear
 setup_optional_mcp_connector "Sentry" SENTRY_CONNECTOR https://mcp.sentry.dev/mcp sentry
+setup_optional_mcp_connector "Atlassian" ATLASSIAN_CONNECTOR https://mcp.atlassian.com/v1/mcp/authv2 atlassian
+setup_optional_mcp_connector "Shortcut" SHORTCUT_CONNECTOR https://mcp.shortcut.com/mcp shortcut
 
 # --- 7. Pull environment variables locally ----------------------------------
 step "Pulling environment variables to .env.local"
