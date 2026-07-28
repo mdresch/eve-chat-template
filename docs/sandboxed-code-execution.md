@@ -1,32 +1,40 @@
 # Sandboxed Code Execution
 
-This document explains the Docker-backed sandbox: how the agent runs shell
-commands, how the chat UI surfaces the container behind a chat, and how idle
-containers get cleaned up.
+This document explains the sandbox: how the agent runs shell commands, how
+the chat UI surfaces the Docker container behind a chat, and how idle
+containers get cleaned up. Docker can't run in Vercel's build or runtime
+environments at all, so this app uses two backends depending on where it's
+running: Docker locally and in any self-hosted deployment, Vercel Sandbox
+when deployed on Vercel itself. The container-name recording, VS Code
+attach link, and idle-cleanup cron described below are all Docker-specific
+and simply don't apply on the Vercel Sandbox path — Vercel Sandbox manages
+its own sandbox lifecycle instead.
 
 ## Sandbox Backend
 
 `agent/sandbox.ts` declares the sandbox with `defineSandbox` from
-`eve/sandbox`, pinned to the Docker backend (`eve/sandbox/docker`):
+`eve/sandbox`, using `defaultBackend()`:
 
 ```ts
 export default defineSandbox({
-  backend: docker(),
+  backend: defaultBackend(),
   async onSession({ use, ctx }) { ... },
 });
 ```
 
-It is pinned to Docker deliberately, not left to eve's default backend
-selection, so the sandbox behaves identically locally and in this app's own
-deployment regardless of whether `process.env.VERCEL` is set. Declaring
-`agent/sandbox.ts` is what makes eve's default `bash` tool available to the
-agent at all.
+`defaultBackend()` picks Vercel Sandbox when `process.env.VERCEL` is set and
+Docker otherwise, so the same code works both locally/self-hosted and on
+this app's own Vercel deployment. Declaring `agent/sandbox.ts` is what makes
+eve's default `bash` tool available to the agent at all.
 
-`onSession` opens the sandbox (`use()`) and immediately records the Docker
-container name against the chat row via `recordChatSandboxContainer`
-(`lib/db/queries.ts`), tagging it with the eve `session.id`. This runs even
-for turns that never call `bash`, so the container name is available as soon
-as the sandbox opens rather than only after a tool call.
+On the Docker path, `onSession` opens the sandbox (`use()`) and immediately
+records the container name against the chat row via
+`recordChatSandboxContainer` (`lib/db/queries.ts`), tagging it with the eve
+`session.id`. This runs even for turns that never call `bash`, so the
+container name is available as soon as the sandbox opens rather than only
+after a tool call. It's skipped entirely when `process.env.VERCEL` is set,
+since a Vercel Sandbox instance isn't a Docker container and there's no
+value in recording it.
 
 ## The `bash` Tool
 
@@ -38,6 +46,9 @@ export default defineTool({
   ...bash,
   async execute(input, ctx) {
     const result = await bash.execute(input, ctx);
+
+    if (process.env.VERCEL) return result;
+
     const sandbox = await ctx.getSandbox();
     void recordChatSandboxContainer({ containerName: sandbox.id, sessionId: ctx.session.id });
     return { ...result, sandbox: { containerName: sandbox.id } };
@@ -45,7 +56,7 @@ export default defineTool({
 });
 ```
 
-This does two things beyond the default behavior:
+On the Docker path this does two things beyond the default behavior:
 
 1. Records the container name again on every call (redundant with
    `agent/sandbox.ts`'s `onSession` for the common case, but necessary for
@@ -54,6 +65,10 @@ This does two things beyond the default behavior:
 2. Returns `sandbox.containerName` alongside the normal tool output, so the
    container name rides along on the chat's own event log — no separate
    client-side fetch needed to know which container backs a chat.
+
+On Vercel (Vercel Sandbox), it just returns the plain tool result — every
+downstream reader already treats a missing container name as the normal
+case for chats that haven't opened a Docker sandbox.
 
 ## Surfacing The Container In The UI
 
@@ -83,9 +98,13 @@ tracks.
 
 ## Idle Cleanup
 
-Sandbox containers stay around after a turn ends so the next turn in the same
-chat can resume the same filesystem. Left unchecked, that accumulates
-containers indefinitely, so a cron job stops (never removes) idle ones.
+This section only applies to the Docker path. Docker containers stay around
+after a turn ends so the next turn in the same chat can resume the same
+filesystem. Left unchecked, that accumulates containers indefinitely, so a
+cron job stops (never removes) idle ones. Vercel Sandbox instances aren't
+Docker containers and manage their own idle/expiry lifecycle, so there's
+nothing for this job to do on that path — `app/api/cron/sandbox-cleanup/route.ts`
+no-ops immediately when `process.env.VERCEL` is set.
 
 This project schedules it with an [Upstash QStash](https://upstash.com/docs/qstash)
 Schedule rather than Vercel Cron: Vercel Hobby plans cap Cron Jobs at
@@ -121,12 +140,10 @@ stopped container by name on that chat's next turn (`docker start`), so
 stopping only reclaims idle compute — the workspace filesystem and the
 chat's ability to resume are both preserved.
 
-This means the cron job, `app/api/cron/sandbox-cleanup/route.ts`, and
-`lib/sandbox/idle-cleanup.ts` all need to run somewhere with access to the
+Outside of Vercel, this means the cron job, `app/api/cron/sandbox-cleanup/route.ts`,
+and `lib/sandbox/idle-cleanup.ts` need to run somewhere with access to the
 same Docker daemon the sandbox backend itself uses (the local Docker socket
-in dev, or wherever this app's own deployment runs Docker — this is not
-compatible with a stock Vercel serverless deployment, which has no Docker
-daemon to talk to).
+in dev, or wherever this app's own self-hosted deployment runs Docker).
 
 ## Required Environment Variable
 

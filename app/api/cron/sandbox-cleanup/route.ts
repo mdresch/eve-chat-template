@@ -14,6 +14,13 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  if (process.env.VERCEL) {
+    // agent/sandbox.ts's defaultBackend() resolves to Vercel Sandbox here,
+    // not Docker, so there's no container for this route to stop — Vercel
+    // Sandbox expires idle sandboxes on its own.
+    return NextResponse.json({ skipped: "not-a-docker-deployment" });
+  }
+
   const result = await stopIdleSandboxContainers(new Date(Date.now() - IDLE_THRESHOLD_MS));
 
   return NextResponse.json(result);

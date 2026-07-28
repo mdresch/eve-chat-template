@@ -17,7 +17,7 @@ filenames must be snake_case ASCII.
 
 | File | Tool name | Purpose |
 | --- | --- | --- |
-| `agent/tools/bash.ts` | `bash` | Wraps eve's default sandboxed `bash` tool to also surface the sandbox's Docker container name. See [Sandboxed Code Execution](sandboxed-code-execution.md). |
+| `agent/tools/bash.ts` | `bash` | Wraps eve's default sandboxed `bash` tool to also surface the sandbox's Docker container name (Docker path only; no-op on Vercel Sandbox). See [Sandboxed Code Execution](sandboxed-code-execution.md). |
 | `agent/tools/get_weather.ts` | `get_weather` | Returns a stubbed current-weather reading for a city. Referenced by `agent/instructions.md` and the `plan_a_trip` skill. |
 | `agent/tools/web_search.ts` | `web_search` | Searches the web via the Exa API. Requires `EXA_API_KEY`; throws a clear error if unconfigured. Overrides eve's built-in provider-managed web search tool with this Exa-backed one. Duplicated as `tools/web_search.ts` inside each of the five [PMBOK stage subagents](pmbok-specialist-subagent.md#nested-subagents-dont-inherit-connections-or-tools), since subagents don't inherit the root's tools. |
 | `agent/tools/workflow.ts` | (framework) | Opts into eve's experimental `Workflow` tool (`experimental_workflow()`) — lets the model write JS that orchestrates parallel/sequential calls to its own subagents as one durable step. See eve's dynamic-workflows guide under `node_modules/eve/dist/docs/public/`. |
