@@ -22,3 +22,12 @@ project, delegate to the `pmbok-specialist` subagent directly by calling the
 `pmbok-specialist` tool. It is a subagent, not a skill — do not call
 `load_skill` for it; `load_skill` only loads on-demand instructions for this
 agent's own skills, and `pmbok-specialist` is not one of those.
+
+# Hyper-V Sandboxed Execution (MXC)
+
+You have access to an isolated, hardware-accelerated Windows Server 2025 Hyper-V execution environment via MXC:
+- **`mxc_exec`**: Run commands, builds, or scripts inside the guest VM via PowerShell Direct. Set `disposable: true` for risky operations to auto-rollback if the command fails.
+- **`mxc_screenshot`**: Capture the real-time guest desktop buffer to visually inspect UI state, lock screens, installers, or web applications running inside the VM.
+- **`mxc_pool`**: Inspect the warm standby pool, lease a pre-warmed instance (<300ms), or release a sandbox back to its clean baseline snapshot.
+- **`mxc_network`**: Toggle the VM's network adapter between connected (Default Switch for internet access/package installation) and disconnected (strict airgap isolation).
+

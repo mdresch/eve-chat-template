@@ -372,14 +372,23 @@ export async function skipChatAuthorization({
 // since this is a system job over every chat with a live sandbox session.
 export async function listIdleChatsWithSandboxSession(idleBefore: Date) {
   const rows = await db
-    .select({ eveSession: chat.eveSession, id: chat.id })
+    .select({
+      eveSession: chat.eveSession,
+      id: chat.id,
+      sandboxContainerName: chat.sandboxContainerName,
+    })
     .from(chat)
     .where(lt(chat.updatedAt, idleBefore));
 
   return rows
-    .map((row) => ({ chatId: row.id, sessionId: row.eveSession?.sessionId ?? null }))
+    .map((row) => ({
+      chatId: row.id,
+      sessionId: row.eveSession?.sessionId ?? null,
+      sandboxContainerName: row.sandboxContainerName,
+    }))
     .filter(
-      (row): row is { chatId: string; sessionId: string } => row.sessionId !== null,
+      (row): row is { chatId: string; sessionId: string; sandboxContainerName: string | null } =>
+        row.sessionId !== null,
     );
 }
 

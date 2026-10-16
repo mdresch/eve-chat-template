@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { listIdleChatsWithSandboxSession } from "@/lib/db/queries";
+import { mxcPoolRelease } from "@/lib/mxc/client";
 
 const execFileAsync = promisify(execFile);
 
@@ -14,7 +15,8 @@ export interface IdleSandboxCleanupResult {
   readonly stoppedContainers: readonly string[];
 }
 
-// Stops (never removes) the Docker container backing an idle chat's sandbox.
+// Stops (never removes) the Docker container backing an idle chat's sandbox,
+// or recycles an idle MXC Hyper-V sandbox back to clean baseline snapshot.
 // eve's own backend keys session containers by a name derived from the eve
 // sessionId and reconnects to a stopped container by that name on the next
 // turn (`docker start`), so stopping here is safe: the workspace filesystem
@@ -26,8 +28,16 @@ export async function stopIdleSandboxContainers(
   const stoppedContainers: string[] = [];
   const errors: { chatId: string; error: string }[] = [];
 
-  for (const { chatId, sessionId } of idleChats) {
+  for (const { chatId, sessionId, sandboxContainerName } of idleChats) {
     try {
+      // 1. If this is an MXC Hyper-V sandbox, recycle it back to clean baseline
+      if (sandboxContainerName && sandboxContainerName.startsWith("hv:")) {
+        await mxcPoolRelease(sandboxContainerName);
+        stoppedContainers.push(sandboxContainerName);
+        continue;
+      }
+
+      // 2. Otherwise handle standard Docker sandbox container
       const containerName = await findRunningSandboxContainerName(sessionId);
 
       if (containerName) {
