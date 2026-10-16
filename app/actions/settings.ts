@@ -17,6 +17,7 @@ import { enforceRateLimit } from "@/lib/rate-limit";
 import {
   listAnthropicModels,
   listBifrostModels,
+  listMergeGatewayModels,
   listGoogleModels,
   listMistralModels,
   listOpenAiCompatibleModels,
@@ -78,6 +79,8 @@ export async function listModelsForProviderAction(
       return listOpenAiCompatibleModels(requireBaseUrl(credentials), credentials.apiKey);
     case "bifrost":
       return listBifrostModels(requireBaseUrl(credentials), requireKey(credentials));
+    case "merge-gateway":
+      return listMergeGatewayModels(requireBaseUrl(credentials), requireKey(credentials));
   }
 }
 
@@ -115,6 +118,14 @@ export async function listModelsForStoredProviderAction(provider: Exclude<AiProv
     }
 
     return listBifrostModels(credential.baseUrl, requireKey({ apiKey }));
+  }
+
+  if (provider === "merge-gateway") {
+    if (!credential.baseUrl) {
+      throw new Error("Missing base URL on stored credential.");
+    }
+
+    return listMergeGatewayModels(credential.baseUrl, requireKey({ apiKey }));
   }
 
   return listModelsForProviderAction(provider, { apiKey });
@@ -202,6 +213,12 @@ export async function testStoredProviderCredentialAction(provider: AiProvider) {
         }
 
         await listBifrostModels(credential.baseUrl, requireKey({ apiKey }));
+      } else if (provider === "merge-gateway") {
+        if (!credential.baseUrl) {
+          throw new Error("Missing base URL on stored credential.");
+        }
+
+        await listMergeGatewayModels(credential.baseUrl, requireKey({ apiKey }));
       } else {
         await listModelsForProviderAction(provider, { apiKey });
       }

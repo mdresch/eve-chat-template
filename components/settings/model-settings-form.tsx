@@ -50,6 +50,7 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   ollama: "Ollama",
   "foundry-local": "Microsoft Foundry Local",
   bifrost: "Bifrost Gateway",
+  "merge-gateway": "Merge Gateway",
 };
 
 const LOCAL_PROVIDERS = new Set<AiProvider>(["ollama", "foundry-local"]);
@@ -308,6 +309,10 @@ function describeCredential(provider: AiProvider, credential: CredentialSummary 
   }
 
   if (provider === "bifrost" && credential.baseUrl) {
+    return `${credential.baseUrl} · ${credential.model ?? "Configured"}`;
+  }
+
+  if (provider === "merge-gateway" && credential.baseUrl) {
     return `${credential.baseUrl} · ${credential.model ?? "Configured"}`;
   }
 

@@ -102,3 +102,68 @@ export async function listBifrostModels(
     throw new Error("Could not reach your Bifrost gateway. Check the base URL and key.");
   }
 }
+
+export async function listMergeGatewayModels(
+  baseUrl: string,
+  apiKey: string,
+): Promise<ProviderModelOption[]> {
+  try {
+    const url = `${baseUrl.replace(/\/+$/, "")}/models`;
+    const res = await fetch(url, {
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "");
+      throw new Error(
+        `Merge Gateway returned ${res.status}: ${errorText || "Check base URL and API key."}`
+      );
+    }
+
+    const json = await res.json();
+
+    // Handle both standard OpenAI format and Merge Gateway format
+    // Standard: { data: [{ id: "..." }, ...] }
+    // Merge Gateway: { object: "list", data: [{ model: "id", display_name: "...", ... }, ...] }
+    let rawModels: Array<{ id?: string; model?: string; display_name?: string }>;
+
+    // Standard OpenAI format or Merge Gateway format: { data: [...] }
+    if (json.data && Array.isArray(json.data)) {
+      rawModels = json.data;
+    }
+    // Direct array: [{ ... }, ...]
+    else if (Array.isArray(json)) {
+      rawModels = json;
+    }
+    // Merge Gateway might wrap in: { data: { models: [...] } }
+    else if (json.data && json.data.models && Array.isArray(json.data.models)) {
+      rawModels = json.data.models;
+    }
+    // Alternative: { models: [...] }
+    else if (json.models && Array.isArray(json.models)) {
+      rawModels = json.models;
+    }
+    else {
+      throw new Error(
+        `Unexpected response format from Merge Gateway. Received: ${JSON.stringify(json).substring(0, 200)}`
+      );
+    }
+
+    // Map to ProviderModelOption - handle both id and model fields
+    return rawModels
+      .map((m) => {
+        const id = m.id || m.model;
+        if (!id) return null;
+        return {
+          id,
+          label: m.display_name || id,
+        };
+      })
+      .filter((m): m is ProviderModelOption => m !== null);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Merge Gateway error: ${error.message}`);
+    }
+    throw new Error("Could not reach your Merge Gateway. Check the base URL and key.");
+  }
+}

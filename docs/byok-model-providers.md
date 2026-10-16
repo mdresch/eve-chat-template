@@ -21,11 +21,12 @@ Defined in `lib/db/schema.ts` as `AI_PROVIDER_VALUES`:
 | `ollama` | Optional | Yes | Runs locally; only works while the app itself runs on `pnpm dev` |
 | `foundry-local` | Optional | Yes | Microsoft Foundry Local; same local-only caveat as Ollama |
 | `bifrost` | Yes | Yes | Self-hosted Bifrost gateway (OpenAI-compatible) |
+| `merge-gateway` | Yes | Yes | Merge Gateway (OpenAI-compatible) |
 
 `BASE_URL_PROVIDERS` (`lib/db/schema.ts`) is the list that needs a Base URL
-field in the UI: `ollama`, `foundry-local`, `bifrost`. This is a separate
+field in the UI: `ollama`, `foundry-local`, `bifrost`, `merge-gateway`. This is a separate
 concept from "key optional" — Ollama/Foundry Local commonly run with no key,
-Bifrost always needs one.
+Bifrost and Merge Gateway always need one.
 
 ## Settings UI
 

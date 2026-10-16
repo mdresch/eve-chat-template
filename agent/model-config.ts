@@ -42,6 +42,12 @@ export function buildModelFromCredential(credential: UserProviderCredential) {
         baseURL: requireField(credential.baseUrl, "base URL"),
         name: "bifrost",
       })(requireModel(credential));
+    case "merge-gateway":
+      return createOpenAICompatible({
+        apiKey: requireField(apiKey, "API key"),
+        baseURL: requireField(credential.baseUrl, "base URL"),
+        name: "merge-gateway",
+      })(requireModel(credential));
   }
 }
 
