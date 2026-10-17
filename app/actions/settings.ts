@@ -1,5 +1,7 @@
 "use server";
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as Sentry from "@sentry/nextjs";
 import { generateText } from "ai";
 import { createAzure } from "@ai-sdk/azure";
@@ -9,10 +11,25 @@ import {
   deleteUserProviderCredential,
   getUserModelPreference,
   getUserProviderCredential,
+  getUserSandboxPreference,
   setActiveProvider,
+  setActiveSandbox,
   upsertUserProviderCredential,
+  upsertUserSandboxPreference,
 } from "@/lib/db/queries";
-import { AI_PROVIDER_VALUES, BASE_URL_PROVIDERS, type AiProvider } from "@/lib/db/schema";
+import {
+  AI_PROVIDER_VALUES,
+  BASE_URL_PROVIDERS,
+  SANDBOX_PROVIDER_VALUES,
+  type AiProvider,
+  type SandboxProvider,
+} from "@/lib/db/schema";
+import {
+  invalidateMxcConfigCache,
+  listMxcSandboxInstances,
+  mxcExecCommand,
+  mxcPoolStatus,
+} from "@/lib/mxc/client";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import {
   listAnthropicModels,
@@ -25,6 +42,8 @@ import {
   VERCEL_AI_GATEWAY_DEFAULT_BASE_URL,
 } from "@/lib/provider-models";
 import { getServerViewer } from "@/lib/session";
+
+const execFileAsync = promisify(execFile);
 
 const MODEL_LIST_LIMIT = 20;
 const MODEL_LIST_WINDOW_SECONDS = 60 * 60;
@@ -362,4 +381,142 @@ export async function deleteProviderCredentialAction(provider: AiProvider) {
   }
 
   return { ok: true as const };
+}
+
+export async function setActiveSandboxAction(provider: SandboxProvider | null) {
+  const viewer = await requireViewer();
+
+  if (provider && !SANDBOX_PROVIDER_VALUES.includes(provider)) {
+    throw new Error("Invalid sandbox runtime.");
+  }
+
+  await setActiveSandbox(viewer.id, provider);
+  invalidateMxcConfigCache();
+
+  return { ok: true as const };
+}
+
+export async function saveSandboxPreferenceAction(input: {
+  readonly activeSandbox: SandboxProvider | null;
+  readonly mcpUrl?: string;
+  readonly remoteHost?: string;
+  readonly repoRoot?: string;
+  readonly defaultSandboxId?: string;
+  readonly dockerImage?: string;
+}) {
+  const viewer = await requireViewer();
+
+  if (input.activeSandbox && !SANDBOX_PROVIDER_VALUES.includes(input.activeSandbox)) {
+    throw new Error("Invalid sandbox runtime.");
+  }
+
+  const existing = await getUserSandboxPreference(viewer.id);
+
+  await upsertUserSandboxPreference({
+    activeSandbox: input.activeSandbox,
+    defaultSandboxId:
+      input.defaultSandboxId !== undefined
+        ? input.defaultSandboxId.trim() || null
+        : existing.defaultSandboxId,
+    dockerImage:
+      input.dockerImage !== undefined
+        ? input.dockerImage.trim() || null
+        : existing.dockerImage,
+    mcpUrl:
+      input.mcpUrl !== undefined ? input.mcpUrl.trim() || null : existing.mcpUrl,
+    remoteHost:
+      input.remoteHost !== undefined
+        ? input.remoteHost.trim() || null
+        : existing.remoteHost,
+    repoRoot:
+      input.repoRoot !== undefined
+        ? input.repoRoot.trim() || null
+        : existing.repoRoot,
+    userId: viewer.id,
+  });
+
+  invalidateMxcConfigCache();
+
+  return { ok: true as const };
+}
+
+export async function listMxcSandboxInstancesAction(options?: {
+  readonly mcpUrl?: string;
+}) {
+  const viewer = await requireViewer();
+  await enforceRateLimit({
+    key: viewer.id,
+    limit: MODEL_LIST_LIMIT,
+    prefix: "sandbox-list",
+    windowSeconds: MODEL_LIST_WINDOW_SECONDS,
+  });
+
+  return listMxcSandboxInstances(options?.mcpUrl);
+}
+
+export async function testSandboxProviderAction(
+  provider: SandboxProvider,
+): Promise<{ readonly message: string }> {
+  const viewer = await requireViewer();
+  await enforceRateLimit({
+    key: viewer.id,
+    limit: MODEL_LIST_LIMIT,
+    prefix: "sandbox-test",
+    windowSeconds: MODEL_LIST_WINDOW_SECONDS,
+  });
+
+  const pref = await getUserSandboxPreference(viewer.id);
+
+  if (provider === "docker") {
+    const dockerExe = process.env.EVE_DOCKER_PATH || "docker";
+    try {
+      const { stdout } = await execFileAsync(
+        dockerExe,
+        ["version", "--format", "{{.Server.Version}}"],
+        { timeout: 3500 },
+      );
+      const ver = stdout.trim();
+      return {
+        message: `Docker daemon reachable (Engine v${ver || "active"} · Image: ${pref.dockerImage || "node:22-bookworm"}).`,
+      };
+    } catch (error) {
+      throw new Error(
+        `Docker daemon unreachable (${error instanceof Error ? error.message : "check Docker Desktop"}).`,
+      );
+    }
+  }
+
+  if (provider === "vercel-sandbox") {
+    const hasVercelEnv = Boolean(
+      process.env.VERCEL ||
+        process.env.VERCEL_OIDC_TOKEN ||
+        process.env.VERCEL_SANDBOX_TOKEN,
+    );
+    if (!hasVercelEnv) {
+      return {
+        message:
+          "Vercel Sandbox is ready for cloud deployments (activates automatically when deployed on Vercel or when VERCEL_OIDC_TOKEN is present).",
+      };
+    }
+    return {
+      message: "Vercel Sandbox cloud microVM credentials detected.",
+    };
+  }
+
+  if (provider === "mxc" || provider === "hyperv") {
+    invalidateMxcConfigCache();
+    const pool = await mxcPoolStatus(pref.mcpUrl);
+    const execRes = await mxcExecCommand("hostname", {
+      sandboxId: pref.defaultSandboxId || undefined,
+    });
+    if (execRes.exitCode !== 0) {
+      throw new Error(execRes.stderr || "Guest command execution failed.");
+    }
+    const hostLine = execRes.stdout.split(/\r?\n/)[0]?.trim() || "guest";
+    return {
+      message: `Connected to ${execRes.sandboxId} (Host: ${hostLine} · Standby Pool: ${pool.ready_count}/${pool.target_size} ready).`,
+    };
+  }
+
+  throw new Error(`Unsupported sandbox provider: ${provider}`);
 }

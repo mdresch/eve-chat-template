@@ -19,7 +19,7 @@ export default defineTool({
       ),
   }),
   async execute({ enabled, sandbox_id }) {
-    const result = await mxcSetNetwork(sandbox_id || "hv:a7df7452", enabled);
+    const result = await mxcSetNetwork(sandbox_id, enabled);
     return {
       sandboxId: result.sandboxId,
       networkConnected: result.connected,

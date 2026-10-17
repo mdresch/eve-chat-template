@@ -1,7 +1,11 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { ModelSettingsForm } from "@/components/settings/model-settings-form";
-import { getUserModelPreference, listUserProviderCredentialSummaries } from "@/lib/db/queries";
+import {
+  getUserModelPreference,
+  getUserSandboxPreference,
+  listUserProviderCredentialSummaries,
+} from "@/lib/db/queries";
 import { getServerViewer } from "@/lib/session";
 import { getSetupStatus } from "@/lib/setup";
 
@@ -21,10 +25,17 @@ async function SettingsContent() {
     redirect("/");
   }
 
-  const [activeProvider, credentials] = await Promise.all([
+  const [activeProvider, credentials, sandboxPreference] = await Promise.all([
     getUserModelPreference(viewer.id),
     listUserProviderCredentialSummaries(viewer.id),
+    getUserSandboxPreference(viewer.id),
   ]);
 
-  return <ModelSettingsForm activeProvider={activeProvider} credentials={credentials} />;
+  return (
+    <ModelSettingsForm
+      activeProvider={activeProvider}
+      credentials={credentials}
+      sandboxPreference={sandboxPreference}
+    />
+  );
 }

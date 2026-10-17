@@ -156,11 +156,33 @@ export const userProviderCredential = pgTable(
   (table) => [primaryKey({ columns: [table.userId, table.provider] })],
 );
 
+export const SANDBOX_PROVIDER_VALUES = [
+  "docker",
+  "vercel-sandbox",
+  "mxc",
+  "hyperv",
+] as const;
+export type SandboxProvider = (typeof SANDBOX_PROVIDER_VALUES)[number];
+
+export const userSandboxPreference = pgTable("user_sandbox_preference", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  activeSandbox: text("active_sandbox", { enum: SANDBOX_PROVIDER_VALUES }),
+  mcpUrl: text("mcp_url"),
+  remoteHost: text("remote_host"),
+  repoRoot: text("repo_root"),
+  defaultSandboxId: text("default_sandbox_id"),
+  dockerImage: text("docker_image"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export type Chat = typeof chat.$inferSelect;
 export type ChatEvent = typeof chatEvent.$inferSelect;
 export type User = typeof user.$inferSelect;
 export type UserModelPreference = typeof userModelPreference.$inferSelect;
 export type UserProviderCredential = typeof userProviderCredential.$inferSelect;
+export type UserSandboxPreference = typeof userSandboxPreference.$inferSelect;
 
 export const hrEmployee = pgTable("hr_employee", {
   id: text("id").primaryKey(),

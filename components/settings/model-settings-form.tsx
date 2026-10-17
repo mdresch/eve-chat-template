@@ -6,9 +6,13 @@ import {
   deleteProviderCredentialAction,
   listModelsForProviderAction,
   listModelsForStoredProviderAction,
+  listMxcSandboxInstancesAction,
   saveProviderCredentialAction,
+  saveSandboxPreferenceAction,
   setActiveProviderAction,
+  setActiveSandboxAction,
   testAzureCredentialAction,
+  testSandboxProviderAction,
   testStoredProviderCredentialAction,
 } from "@/app/actions/settings";
 import { Badge } from "@/components/ui/badge";
@@ -29,7 +33,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { BASE_URL_PROVIDERS, type AiProvider } from "@/lib/db/schema";
+import type { UserSandboxPreferenceSummary } from "@/lib/db/queries";
+import {
+  BASE_URL_PROVIDERS,
+  SANDBOX_PROVIDER_VALUES,
+  type AiProvider,
+  type SandboxProvider,
+} from "@/lib/db/schema";
+import type { MxcSandboxInstanceOption } from "@/lib/mxc/client";
 import { cn } from "@/lib/utils";
 import type { ProviderModelOption } from "@/lib/provider-models";
 
@@ -54,6 +65,13 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   "merge-gateway": "Merge Gateway",
 };
 
+const SANDBOX_LABELS: Record<SandboxProvider, string> = {
+  docker: "Docker Images",
+  "vercel-sandbox": "Vercel Sandbox",
+  mxc: "MXC Container",
+  hyperv: "Hyper-V VM (Windows Server 2025)",
+};
+
 const LOCAL_PROVIDERS = new Set<AiProvider>(["ollama", "foundry-local"]);
 const DEFAULT_LOCAL_BASE_URL: Record<string, string> = {
   ollama: "http://localhost:11434/v1",
@@ -64,9 +82,11 @@ const DEFAULT_LOCAL_BASE_URL: Record<string, string> = {
 export function ModelSettingsForm({
   activeProvider: initialActiveProvider,
   credentials: initialCredentials,
+  sandboxPreference: initialSandboxPreference,
 }: {
   readonly activeProvider: AiProvider | null;
   readonly credentials: readonly CredentialSummary[];
+  readonly sandboxPreference: UserSandboxPreferenceSummary;
 }) {
   const [activeProvider, setActiveProviderState] = useState(initialActiveProvider);
   const [credentials, setCredentials] = useState(initialCredentials);
@@ -75,6 +95,15 @@ export function ModelSettingsForm({
   const [testResult, setTestResult] = useState<{ provider: AiProvider; ok: boolean; message: string } | null>(
     null,
   );
+
+  const [sandboxPref, setSandboxPref] = useState<UserSandboxPreferenceSummary>(initialSandboxPreference);
+  const [openSandboxDialog, setOpenSandboxDialog] = useState<SandboxProvider | null>(null);
+  const [busySandbox, setBusySandbox] = useState<string | null>(null);
+  const [sandboxTestResult, setSandboxTestResult] = useState<{
+    provider: SandboxProvider;
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   const credentialFor = (provider: AiProvider) => credentials.find((c) => c.provider === provider) ?? null;
 
@@ -155,6 +184,49 @@ export function ModelSettingsForm({
     setCredentials((prev) => [...prev.filter((c) => c.provider !== summary.provider), summary]);
     setActiveProviderState(summary.provider);
     setOpenDialog(null);
+  }
+
+  async function handleUseSandbox(provider: SandboxProvider | null) {
+    setBusySandbox(provider ?? "default");
+    setSandboxTestResult(null);
+
+    try {
+      await setActiveSandboxAction(provider);
+      setSandboxPref((prev) => ({ ...prev, activeSandbox: provider }));
+    } catch (error) {
+      if (provider) {
+        setSandboxTestResult({
+          message: error instanceof Error ? error.message : "Failed to switch sandbox runtime.",
+          ok: false,
+          provider,
+        });
+      }
+    } finally {
+      setBusySandbox(null);
+    }
+  }
+
+  async function handleTestSandbox(provider: SandboxProvider) {
+    setBusySandbox(provider);
+    setSandboxTestResult(null);
+
+    try {
+      const res = await testSandboxProviderAction(provider);
+      setSandboxTestResult({ message: res.message, ok: true, provider });
+    } catch (error) {
+      setSandboxTestResult({
+        message: error instanceof Error ? error.message : "Sandbox test failed.",
+        ok: false,
+        provider,
+      });
+    } finally {
+      setBusySandbox(null);
+    }
+  }
+
+  function handleSandboxSaved(updated: UserSandboxPreferenceSummary) {
+    setSandboxPref(updated);
+    setOpenSandboxDialog(null);
   }
 
   return (
@@ -255,12 +327,110 @@ export function ModelSettingsForm({
         );
       })}
 
+      <div className="mt-6 border-t border-border pt-6">
+        <h2 className="text-lg font-semibold text-foreground">Sandbox runtime</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Choose which execution sandbox your agent uses for running commands, containers, and isolated virtual machines.
+        </p>
+      </div>
+
+      <ProviderCard
+        active={sandboxPref.activeSandbox === null}
+        busy={busySandbox === "default"}
+        description="Automatically uses Docker locally (pnpm dev) and Vercel Sandbox on Vercel deployments, while keeping MXC and Hyper-V tools available on demand."
+        title="Auto (Environment Default)"
+      >
+        {sandboxPref.activeSandbox === null ? (
+          <Badge>Active</Badge>
+        ) : (
+          <Button
+            disabled={busySandbox !== null}
+            onClick={() => void handleUseSandbox(null)}
+            size="sm"
+            variant="outline"
+          >
+            Use this
+          </Button>
+        )}
+      </ProviderCard>
+
+      {SANDBOX_PROVIDER_VALUES.map((sandboxProvider) => {
+        const isActive = sandboxPref.activeSandbox === sandboxProvider;
+        const isBusy = busySandbox === sandboxProvider;
+        const isConfigurable =
+          sandboxProvider === "docker" ||
+          sandboxProvider === "mxc" ||
+          sandboxProvider === "hyperv";
+
+        return (
+          <ProviderCard
+            active={isActive}
+            busy={isBusy}
+            description={describeSandbox(sandboxProvider, sandboxPref)}
+            key={sandboxProvider}
+            title={SANDBOX_LABELS[sandboxProvider]}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              {isActive ? <Badge>Active</Badge> : null}
+              {!isActive ? (
+                <Button
+                  disabled={busySandbox !== null}
+                  onClick={() => void handleUseSandbox(sandboxProvider)}
+                  size="sm"
+                  variant="outline"
+                >
+                  Use this
+                </Button>
+              ) : null}
+              <Button
+                disabled={busySandbox !== null}
+                onClick={() => void handleTestSandbox(sandboxProvider)}
+                size="sm"
+                variant="ghost"
+              >
+                {isBusy ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
+                Test
+              </Button>
+              {isConfigurable ? (
+                <Button
+                  disabled={busySandbox !== null}
+                  onClick={() => setOpenSandboxDialog(sandboxProvider)}
+                  size="sm"
+                  variant="ghost"
+                >
+                  Configure
+                </Button>
+              ) : null}
+            </div>
+            {sandboxTestResult?.provider === sandboxProvider ? (
+              <p
+                className={cn(
+                  "mt-2 text-xs",
+                  sandboxTestResult.ok ? "text-emerald-600" : "text-destructive",
+                )}
+              >
+                {sandboxTestResult.message}
+              </p>
+            ) : null}
+          </ProviderCard>
+        );
+      })}
+
       {openDialog ? (
         <ConfigureDialog
           existingCredential={credentialFor(openDialog)}
           onClose={() => setOpenDialog(null)}
           onSaved={handleSaved}
           provider={openDialog}
+        />
+      ) : null}
+
+      {openSandboxDialog ? (
+        <ConfigureSandboxDialog
+          existing={sandboxPref}
+          onClose={() => setOpenSandboxDialog(null)}
+          onSaved={handleSandboxSaved}
+          provider={openSandboxDialog}
         />
       ) : null}
     </div>
@@ -686,6 +856,218 @@ function Field({ children, label }: { readonly children: ReactNode; readonly lab
       <span className="text-muted-foreground">{label}</span>
       {children}
     </label>
+  );
+}
+
+function describeSandbox(provider: SandboxProvider, pref: UserSandboxPreferenceSummary) {
+  if (provider === "docker") {
+    return `Local Linux container workspace via Docker (${pref.dockerImage ?? "node:22-bookworm"}).`;
+  }
+
+  if (provider === "vercel-sandbox") {
+    return "Ephemeral cloud microVM workspace managed by @vercel/sandbox.";
+  }
+
+  const endpoint = pref.mcpUrl
+    ? `FastMCP: ${pref.mcpUrl}`
+    : pref.remoteHost
+      ? `SSH: ${pref.remoteHost}`
+      : pref.repoRoot
+        ? `Local CLI: ${pref.repoRoot}`
+        : "Not configured yet";
+
+  const target = pref.defaultSandboxId ?? "auto";
+
+  if (provider === "mxc") {
+    return `MXC container runtime (wxc-exec) · ${endpoint} · Target: ${target}`;
+  }
+
+  return `Isolated Type-1 Hyper-V guest VM (<300ms warm standby pool, checkpoints & WMI screenshots) · ${endpoint} · VM: ${target}`;
+}
+
+function ConfigureSandboxDialog({
+  existing,
+  onClose,
+  onSaved,
+  provider,
+}: {
+  readonly existing: UserSandboxPreferenceSummary;
+  readonly onClose: () => void;
+  readonly onSaved: (updated: UserSandboxPreferenceSummary) => void;
+  readonly provider: SandboxProvider;
+}) {
+  const isDocker = provider === "docker";
+  const [dockerImage, setDockerImage] = useState(existing.dockerImage ?? "node:22-bookworm");
+  const [mcpUrl, setMcpUrl] = useState(existing.mcpUrl ?? "http://192.168.178.63:8000/sse");
+  const [remoteHost, setRemoteHost] = useState(existing.remoteHost ?? "");
+  const [repoRoot, setRepoRoot] = useState(existing.repoRoot ?? "");
+  const [defaultSandboxId, setDefaultSandboxId] = useState(
+    existing.defaultSandboxId ?? "auto",
+  );
+  const [instances, setInstances] = useState<MxcSandboxInstanceOption[]>([]);
+  const [isFetching, setIsFetching] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [status, setStatus] = useState<{ message: string; ok: boolean } | null>(null);
+
+  async function handleFetchSandboxes() {
+    setIsFetching(true);
+    setStatus(null);
+
+    try {
+      const list = await listMxcSandboxInstancesAction({
+        mcpUrl: mcpUrl.trim() || undefined,
+      });
+      setInstances(list);
+      if (list.length > 0 && !list.some((item) => item.id === defaultSandboxId)) {
+        setDefaultSandboxId(list[0].id);
+      }
+      setStatus({
+        message: `Discovered ${list.length} sandbox target(s) from host.`,
+        ok: true,
+      });
+    } catch (error) {
+      setStatus({
+        message: error instanceof Error ? error.message : "Failed to query sandboxes from host.",
+        ok: false,
+      });
+    } finally {
+      setIsFetching(false);
+    }
+  }
+
+  async function handleSave() {
+    setIsSaving(true);
+    setStatus(null);
+
+    try {
+      await saveSandboxPreferenceAction({
+        activeSandbox: provider,
+        defaultSandboxId: isDocker ? undefined : defaultSandboxId,
+        dockerImage: isDocker ? dockerImage : undefined,
+        mcpUrl: isDocker ? undefined : mcpUrl,
+        remoteHost: isDocker ? undefined : remoteHost,
+        repoRoot: isDocker ? undefined : repoRoot,
+      });
+
+      onSaved({
+        activeSandbox: provider,
+        defaultSandboxId: isDocker ? existing.defaultSandboxId : (defaultSandboxId.trim() || null),
+        dockerImage: isDocker ? (dockerImage.trim() || "node:22-bookworm") : existing.dockerImage,
+        mcpUrl: isDocker ? existing.mcpUrl : (mcpUrl.trim() || null),
+        remoteHost: isDocker ? existing.remoteHost : (remoteHost.trim() || null),
+        repoRoot: isDocker ? existing.repoRoot : (repoRoot.trim() || null),
+      });
+    } catch (error) {
+      setStatus({
+        message: error instanceof Error ? error.message : "Failed to save sandbox settings.",
+        ok: false,
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={(open) => !open && onClose()} open>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Configure {SANDBOX_LABELS[provider]}</DialogTitle>
+          <DialogDescription>
+            {isDocker
+              ? "Configure the local Docker container image used for POSIX bash sessions."
+              : "Configure how eve connects to your MXC / Hyper-V host (Mode 1 FastMCP HTTP/SSE, Mode 2 OpenSSH, or Mode 3 Local CLI) and select your default VM or standby pool target."}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-3">
+          {isDocker ? (
+            <Field label="Docker image">
+              <Input
+                onChange={(event) => setDockerImage(event.target.value)}
+                placeholder="node:22-bookworm"
+                value={dockerImage}
+              />
+            </Field>
+          ) : (
+            <>
+              <Field label="Mode 1 — FastMCP Server URL (recommended for LAN / Windows Home client)">
+                <Input
+                  onChange={(event) => setMcpUrl(event.target.value)}
+                  placeholder="http://192.168.178.63:8000/sse"
+                  value={mcpUrl}
+                />
+              </Field>
+
+              <Field label="Mode 2 — Remote SSH Host (optional fallback if FastMCP URL is blank)">
+                <Input
+                  onChange={(event) => setRemoteHost(event.target.value)}
+                  placeholder="MennoDrescher@192.168.178.63"
+                  value={remoteHost}
+                />
+              </Field>
+
+              <Field label="Mode 3 — Host MXC Repository Path (optional)">
+                <Input
+                  onChange={(event) => setRepoRoot(event.target.value)}
+                  placeholder="C:\Users\MennoDrescher\source\repos\mxc"
+                  value={repoRoot}
+                />
+              </Field>
+
+              <Field label="Default Sandbox / Hyper-V VM ID (or 'auto' for warm standby pool)">
+                <Input
+                  onChange={(event) => setDefaultSandboxId(event.target.value)}
+                  placeholder="hv:a7df7452 or auto"
+                  value={defaultSandboxId}
+                />
+              </Field>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  disabled={isFetching}
+                  onClick={() => void handleFetchSandboxes()}
+                  size="sm"
+                  type="button"
+                >
+                  {isFetching ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
+                  Fetch sandboxes
+                </Button>
+                {instances.length > 0 ? (
+                  <Select onValueChange={setDefaultSandboxId} value={defaultSandboxId}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Choose a sandbox / VM" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {instances.map((instance) => (
+                        <SelectItem key={instance.id} value={instance.id}>
+                          {instance.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : null}
+              </div>
+            </>
+          )}
+
+          {status ? (
+            <p className={cn("text-xs", status.ok ? "text-emerald-600" : "text-destructive")}>
+              {status.message}
+            </p>
+          ) : null}
+        </div>
+
+        <DialogFooter>
+          <Button onClick={onClose} type="button" variant="outline">
+            Cancel
+          </Button>
+          <Button disabled={isSaving} onClick={() => void handleSave()} type="button">
+            {isSaving ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
+            Save & use
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

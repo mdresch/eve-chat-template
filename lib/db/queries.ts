@@ -4,8 +4,14 @@ import type { HandleMessageStreamEvent, SessionState } from "eve/client";
 import { isChatTurnSettledEvent } from "@/lib/chat/events";
 import type { ActiveChat, ChatListItem, ChatListPage, ChatStatus } from "@/lib/chat/types";
 import { createFallbackTitle, DEFAULT_CHAT_TITLE } from "@/lib/chat/title";
-import type { AiProvider } from "@/lib/db/schema";
-import { chat, chatEvent, userModelPreference, userProviderCredential } from "@/lib/db/schema";
+import type { AiProvider, SandboxProvider } from "@/lib/db/schema";
+import {
+  chat,
+  chatEvent,
+  userModelPreference,
+  userProviderCredential,
+  userSandboxPreference,
+} from "@/lib/db/schema";
 import { db } from "@/lib/db/client";
 
 const CHAT_HISTORY_PAGE_SIZE = 20;
@@ -640,4 +646,147 @@ export async function deleteUserProviderCredential(userId: string, provider: AiP
   await db
     .delete(userProviderCredential)
     .where(and(eq(userProviderCredential.userId, userId), eq(userProviderCredential.provider, provider)));
+}
+
+export type UserSandboxPreferenceSummary = {
+  readonly activeSandbox: SandboxProvider | null;
+  readonly mcpUrl: string | null;
+  readonly remoteHost: string | null;
+  readonly repoRoot: string | null;
+  readonly defaultSandboxId: string | null;
+  readonly dockerImage: string | null;
+};
+
+export function getEnvFallbackSandboxPreference(): UserSandboxPreferenceSummary {
+  const mcpUrl = process.env.MXC_MCP_URL?.trim() || null;
+  const remoteHost = process.env.MXC_REMOTE_HOST?.trim() || null;
+  const repoRoot =
+    process.env.MXC_REMOTE_REPO_ROOT?.trim() ||
+    process.env.MXC_REPO_ROOT?.trim() ||
+    null;
+  const defaultSandboxId = process.env.MXC_DEFAULT_SANDBOX_ID?.trim() || null;
+  const dockerImage = process.env.EVE_DOCKER_IMAGE?.trim() || "node:22-bookworm";
+
+  return {
+    activeSandbox: null,
+    defaultSandboxId,
+    dockerImage,
+    mcpUrl,
+    remoteHost,
+    repoRoot,
+  };
+}
+
+export async function getUserSandboxPreference(
+  userId: string,
+): Promise<UserSandboxPreferenceSummary> {
+  const envFallback = getEnvFallbackSandboxPreference();
+  try {
+    const [row] = await db
+      .select({
+        activeSandbox: userSandboxPreference.activeSandbox,
+        defaultSandboxId: userSandboxPreference.defaultSandboxId,
+        dockerImage: userSandboxPreference.dockerImage,
+        mcpUrl: userSandboxPreference.mcpUrl,
+        remoteHost: userSandboxPreference.remoteHost,
+        repoRoot: userSandboxPreference.repoRoot,
+      })
+      .from(userSandboxPreference)
+      .where(eq(userSandboxPreference.userId, userId))
+      .limit(1);
+
+    if (!row) {
+      return envFallback;
+    }
+
+    return {
+      activeSandbox: row.activeSandbox ?? null,
+      defaultSandboxId: row.defaultSandboxId ?? envFallback.defaultSandboxId,
+      dockerImage: row.dockerImage ?? envFallback.dockerImage,
+      mcpUrl: row.mcpUrl ?? envFallback.mcpUrl,
+      remoteHost: row.remoteHost ?? envFallback.remoteHost,
+      repoRoot: row.repoRoot ?? envFallback.repoRoot,
+    };
+  } catch {
+    return envFallback;
+  }
+}
+
+export async function getDefaultDevSandboxPreference(): Promise<UserSandboxPreferenceSummary> {
+  const envFallback = getEnvFallbackSandboxPreference();
+  try {
+    const [row] = await db
+      .select({
+        activeSandbox: userSandboxPreference.activeSandbox,
+        defaultSandboxId: userSandboxPreference.defaultSandboxId,
+        dockerImage: userSandboxPreference.dockerImage,
+        mcpUrl: userSandboxPreference.mcpUrl,
+        remoteHost: userSandboxPreference.remoteHost,
+        repoRoot: userSandboxPreference.repoRoot,
+      })
+      .from(userSandboxPreference)
+      .limit(1);
+
+    if (!row) {
+      return envFallback;
+    }
+
+    return {
+      activeSandbox: row.activeSandbox ?? null,
+      defaultSandboxId: row.defaultSandboxId ?? envFallback.defaultSandboxId,
+      dockerImage: row.dockerImage ?? envFallback.dockerImage,
+      mcpUrl: row.mcpUrl ?? envFallback.mcpUrl,
+      remoteHost: row.remoteHost ?? envFallback.remoteHost,
+      repoRoot: row.repoRoot ?? envFallback.repoRoot,
+    };
+  } catch {
+    return envFallback;
+  }
+}
+
+export async function setActiveSandbox(
+  userId: string,
+  activeSandbox: SandboxProvider | null,
+) {
+  await db
+    .insert(userSandboxPreference)
+    .values({ activeSandbox, userId })
+    .onConflictDoUpdate({
+      set: { activeSandbox, updatedAt: new Date() },
+      target: userSandboxPreference.userId,
+    });
+}
+
+export async function upsertUserSandboxPreference(input: {
+  readonly userId: string;
+  readonly activeSandbox: SandboxProvider | null;
+  readonly mcpUrl?: string | null;
+  readonly remoteHost?: string | null;
+  readonly repoRoot?: string | null;
+  readonly defaultSandboxId?: string | null;
+  readonly dockerImage?: string | null;
+}) {
+  await db
+    .insert(userSandboxPreference)
+    .values({
+      activeSandbox: input.activeSandbox,
+      defaultSandboxId: input.defaultSandboxId ?? null,
+      dockerImage: input.dockerImage ?? null,
+      mcpUrl: input.mcpUrl ?? null,
+      remoteHost: input.remoteHost ?? null,
+      repoRoot: input.repoRoot ?? null,
+      userId: input.userId,
+    })
+    .onConflictDoUpdate({
+      set: {
+        activeSandbox: input.activeSandbox,
+        defaultSandboxId: input.defaultSandboxId ?? null,
+        dockerImage: input.dockerImage ?? null,
+        mcpUrl: input.mcpUrl ?? null,
+        remoteHost: input.remoteHost ?? null,
+        repoRoot: input.repoRoot ?? null,
+        updatedAt: new Date(),
+      },
+      target: userSandboxPreference.userId,
+    });
 }

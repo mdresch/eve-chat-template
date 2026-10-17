@@ -1,8 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import {
+  getDefaultDevSandboxPreference,
+  type UserSandboxPreferenceSummary,
+} from "@/lib/db/queries";
 import type {
   MxcExecOptions,
   MxcExecResult,
@@ -12,13 +16,30 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
+let cachedPref: { value: UserSandboxPreferenceSummary; expiresAt: number } | null = null;
+let cachedDiscoveredFallbackId: string | null = null;
+
+export function invalidateMxcConfigCache(): void {
+  cachedPref = null;
+}
+
+export async function resolveMxcConfig(): Promise<UserSandboxPreferenceSummary> {
+  if (cachedPref && Date.now() < cachedPref.expiresAt) {
+    return cachedPref.value;
+  }
+  const value = await getDefaultDevSandboxPreference();
+  cachedPref = { value, expiresAt: Date.now() + 5000 };
+  return value;
+}
+
 // ===========================================================================
 // Configuration & Path Resolution
 // ===========================================================================
 
-export function getMxcRepoRoot(): string {
-  if (process.env.MXC_REPO_ROOT && existsSync(process.env.MXC_REPO_ROOT)) {
-    return process.env.MXC_REPO_ROOT;
+export function getMxcRepoRoot(repoOverride?: string | null): string {
+  const configured = repoOverride?.trim() || process.env.MXC_REPO_ROOT?.trim();
+  if (configured && existsSync(configured)) {
+    return configured;
   }
   const candidates = [
     "C:\\Users\\MennoDrescher\\source\\repos\\mxc",
@@ -32,27 +53,28 @@ export function getMxcRepoRoot(): string {
   return process.cwd();
 }
 
-export function getRemoteMxcRepoRoot(): string {
+export function getRemoteMxcRepoRoot(repoOverride?: string | null): string {
   return (
+    repoOverride?.trim() ||
     process.env.MXC_REMOTE_REPO_ROOT?.trim() ||
     process.env.MXC_REPO_ROOT?.trim() ||
     "C:\\Users\\MennoDrescher\\source\\repos\\mxc"
   );
 }
 
-export function getRemoteMxcExecPath(): string {
+export function getRemoteMxcExecPath(repoOverride?: string | null): string {
   if (process.env.MXC_REMOTE_EXEC_PATH?.trim()) {
     return process.env.MXC_REMOTE_EXEC_PATH.trim();
   }
-  const remoteRepo = getRemoteMxcRepoRoot().replace(/[\\/]+$/, "");
+  const remoteRepo = getRemoteMxcRepoRoot(repoOverride).replace(/[\\/]+$/, "");
   return `${remoteRepo}\\src\\target\\debug\\wxc-exec.exe`;
 }
 
-export function getMxcExecPath(): string {
+export function getMxcExecPath(repoOverride?: string | null): string {
   if (process.env.MXC_EXEC_PATH && existsSync(process.env.MXC_EXEC_PATH)) {
     return process.env.MXC_EXEC_PATH;
   }
-  const repo = getMxcRepoRoot();
+  const repo = getMxcRepoRoot(repoOverride);
   const debugPath = join(repo, "src", "target", "debug", "wxc-exec.exe");
   if (existsSync(debugPath)) {
     return debugPath;
@@ -64,8 +86,8 @@ export function getMxcExecPath(): string {
   return debugPath;
 }
 
-export function getExecTemplatePath(): string {
-  const repo = getMxcRepoRoot();
+export function getExecTemplatePath(repoOverride?: string | null): string {
+  const repo = getMxcRepoRoot(repoOverride);
   const templatePath = join(repo, "exec.json");
   if (existsSync(templatePath)) {
     return templatePath;
@@ -93,17 +115,15 @@ export function getExecTemplatePath(): string {
 
 /**
  * Execute CLI commands across all 3 modes:
- * - Mode 1: FastMCP HTTP/SSE (if MXC_MCP_URL is defined)
- * - Mode 2: Remote execution over SSH (if MXC_REMOTE_HOST is defined)
+ * - Mode 1: FastMCP HTTP/SSE (if mcpUrl / MXC_MCP_URL is defined)
+ * - Mode 2: Remote execution over SSH (if remoteHost / MXC_REMOTE_HOST is defined)
  * - Mode 3: Local execution on Hyper-V host
  */
 export async function runMxcCli(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  // Mode 2: Remote execution over SSH / Tailscale
-  const remoteHost = process.env.MXC_REMOTE_HOST;
+  const cfg = await resolveMxcConfig();
+  const remoteHost = cfg.remoteHost || process.env.MXC_REMOTE_HOST;
   if (remoteHost) {
-    const remoteExe =
-      process.env.MXC_REMOTE_EXEC_PATH ||
-      "C:\\Users\\MennoDrescher\\source\\repos\\mxc\\src\\target\\debug\\wxc-exec.exe";
+    const remoteExe = getRemoteMxcExecPath(cfg.repoRoot);
     const quotedArgs = args
       .map((a) => (a.includes(" ") ? `"${a.replace(/"/g, '`"')}"` : a))
       .join(" ");
@@ -113,7 +133,7 @@ export async function runMxcCli(args: string[]): Promise<{ stdout: string; stder
   }
 
   // Mode 3: Direct local execution
-  const exe = getMxcExecPath();
+  const exe = getMxcExecPath(cfg.repoRoot);
   return await execFileAsync(exe, args);
 }
 
@@ -121,7 +141,8 @@ export async function runMxcCli(args: string[]): Promise<{ stdout: string; stder
  * Runs a PowerShell command against the host (local or remote SSH).
  */
 export async function runHostPowershell(psScript: string): Promise<{ stdout: string; stderr: string }> {
-  const remoteHost = process.env.MXC_REMOTE_HOST;
+  const cfg = await resolveMxcConfig();
+  const remoteHost = cfg.remoteHost || process.env.MXC_REMOTE_HOST;
 
   if (remoteHost) {
     const escaped = psScript.replace(/"/g, '\\"').replace(/\$/g, "`$");
@@ -146,13 +167,15 @@ interface FastMcpRawResult {
 }
 
 /**
- * Mode 1: Optional FastMCP HTTP/SSE caller if MXC_MCP_URL is configured.
+ * Mode 1: Optional FastMCP HTTP/SSE caller if mcpUrl / MXC_MCP_URL is configured.
  */
 async function callMxcMcp(
   toolName: string,
   args: Record<string, unknown>,
+  mcpUrlOverride?: string | null,
 ): Promise<FastMcpRawResult | null> {
-  const mcpUrl = process.env.MXC_MCP_URL?.trim();
+  const cfg = mcpUrlOverride ? null : await resolveMxcConfig();
+  const mcpUrl = (mcpUrlOverride ?? cfg?.mcpUrl ?? process.env.MXC_MCP_URL)?.trim();
   if (!mcpUrl) {
     return null;
   }
@@ -209,13 +232,149 @@ function extractJsonObject(raw: string): Record<string, any> | null {
 export type MxcTransportMode = "mcp" | "ssh" | "local";
 
 export function getMxcTransportMode(): MxcTransportMode {
-  if (process.env.MXC_MCP_URL?.trim()) {
+  const mcp = cachedPref?.value.mcpUrl || process.env.MXC_MCP_URL?.trim();
+  if (mcp) {
     return "mcp";
   }
-  if (process.env.MXC_REMOTE_HOST?.trim()) {
+  const ssh = cachedPref?.value.remoteHost || process.env.MXC_REMOTE_HOST?.trim();
+  if (ssh) {
     return "ssh";
   }
   return "local";
+}
+
+/**
+ * Dynamically resolve the default/active Hyper-V or MXC sandbox ID from:
+ * 1. Explicit argument
+ * 2. User setting in /settings (`defaultSandboxId`)
+ * 3. `session_status` / `pool_status` on the FastMCP host
+ */
+export async function resolveDefaultSandboxId(
+  explicitId?: string | null,
+  mcpUrlOverride?: string | null,
+): Promise<string> {
+  if (explicitId && explicitId.trim() && explicitId.trim() !== "auto") {
+    return explicitId.trim();
+  }
+
+  const cfg = await resolveMxcConfig();
+  if (
+    !explicitId &&
+    cfg.defaultSandboxId &&
+    cfg.defaultSandboxId.trim() &&
+    cfg.defaultSandboxId.trim() !== "auto"
+  ) {
+    return cfg.defaultSandboxId.trim();
+  }
+
+  if (cachedDiscoveredFallbackId) {
+    return cachedDiscoveredFallbackId;
+  }
+
+  const mcpUrl = mcpUrlOverride ?? cfg.mcpUrl ?? process.env.MXC_MCP_URL;
+  if (mcpUrl) {
+    try {
+      const sessionRes = await callMxcMcp("session_status", {}, mcpUrl);
+      if (sessionRes?.rawText) {
+        const activeMatch = sessionRes.rawText.match(
+          /Active session sandbox:\s*(hv:[a-zA-Z0-9_-]+)/i,
+        );
+        if (activeMatch?.[1]) {
+          cachedDiscoveredFallbackId = activeMatch[1];
+          return activeMatch[1];
+        }
+        const fallbackMatch = sessionRes.rawText.match(
+          /fallback:\s*(hv:[a-zA-Z0-9_-]+)/i,
+        );
+        if (fallbackMatch?.[1]) {
+          cachedDiscoveredFallbackId = fallbackMatch[1];
+          return fallbackMatch[1];
+        }
+      }
+    } catch {
+      // ignore discovery error and continue to pool status
+    }
+  }
+
+  try {
+    const pool = await mxcPoolStatus(mcpUrlOverride);
+    if (pool.members.length > 0) {
+      cachedDiscoveredFallbackId = pool.members[0].sandbox_id;
+      return pool.members[0].sandbox_id;
+    }
+  } catch {
+    // ignore
+  }
+
+  return cfg.defaultSandboxId?.trim() || "auto";
+}
+
+export interface MxcSandboxInstanceOption {
+  readonly id: string;
+  readonly label: string;
+  readonly status: string;
+}
+
+/**
+ * List available Hyper-V / MXC sandbox instances from the host for the /settings UI.
+ */
+export async function listMxcSandboxInstances(
+  mcpUrlOverride?: string | null,
+): Promise<MxcSandboxInstanceOption[]> {
+  const options: MxcSandboxInstanceOption[] = [];
+  const seen = new Set<string>();
+
+  const cfg = await resolveMxcConfig();
+  const mcpUrl = (mcpUrlOverride ?? cfg.mcpUrl ?? process.env.MXC_MCP_URL)?.trim();
+
+  if (mcpUrl) {
+    const sessionRes = await callMxcMcp("session_status", {}, mcpUrl);
+    if (sessionRes?.rawText) {
+      const activeMatch = sessionRes.rawText.match(
+        /Active session sandbox:\s*(hv:[a-zA-Z0-9_-]+)/i,
+      );
+      if (activeMatch?.[1] && !seen.has(activeMatch[1])) {
+        seen.add(activeMatch[1]);
+        options.push({
+          id: activeMatch[1],
+          label: `${activeMatch[1]} (Active Session · Running)`,
+          status: "running",
+        });
+      }
+      const fallbackMatch = sessionRes.rawText.match(
+        /fallback:\s*(hv:[a-zA-Z0-9_-]+)/i,
+      );
+      if (fallbackMatch?.[1] && !seen.has(fallbackMatch[1])) {
+        seen.add(fallbackMatch[1]);
+        cachedDiscoveredFallbackId = fallbackMatch[1];
+        options.push({
+          id: fallbackMatch[1],
+          label: `${fallbackMatch[1]} (Primary Host VM · Running)`,
+          status: "running",
+        });
+      }
+    }
+  }
+
+  const pool = await mxcPoolStatus(mcpUrl);
+  for (const member of pool.members) {
+    if (!seen.has(member.sandbox_id)) {
+      seen.add(member.sandbox_id);
+      options.push({
+        id: member.sandbox_id,
+        label: `${member.sandbox_id} (${member.vm_name} · Pool ${member.status})`,
+        status: member.status,
+      });
+    }
+  }
+
+  options.push({
+    id: "auto",
+    label: "auto (Auto-select / Warm Standby Pool Lease)",
+    status: "auto",
+  });
+
+  return options;
 }
 
 // ===========================================================================
@@ -225,9 +384,11 @@ export function getMxcTransportMode(): MxcTransportMode {
 /**
  * Retrieve the current live status report of the MXC warm standby pool.
  */
-export async function mxcPoolStatus(): Promise<MxcPoolStatus> {
-  if (process.env.MXC_MCP_URL) {
-    const mcpRes = await callMxcMcp("pool_status", {});
+export async function mxcPoolStatus(mcpUrlOverride?: string | null): Promise<MxcPoolStatus> {
+  const cfg = await resolveMxcConfig();
+  const mcpUrl = mcpUrlOverride ?? cfg.mcpUrl ?? process.env.MXC_MCP_URL;
+  if (mcpUrl) {
+    const mcpRes = await callMxcMcp("pool_status", {}, mcpUrl);
     if (mcpRes?.parsedJson) {
       const payload = mcpRes.parsedJson.result ?? mcpRes.parsedJson;
       return payload as MxcPoolStatus;
@@ -256,7 +417,8 @@ export async function mxcPoolStatus(): Promise<MxcPoolStatus> {
  * Instantly lease a pre-warmed Windows Server 2025 sandbox from the standby pool in <300ms.
  */
 export async function mxcPoolLease(holder = "eve-agent"): Promise<string> {
-  if (process.env.MXC_MCP_URL) {
+  const cfg = await resolveMxcConfig();
+  if (cfg.mcpUrl || process.env.MXC_MCP_URL) {
     const mcpRes = await callMxcMcp("pool_lease", { lease_holder: holder });
     if (mcpRes) {
       const jsonId =
@@ -271,7 +433,7 @@ export async function mxcPoolLease(holder = "eve-agent"): Promise<string> {
         return match[1];
       }
       if (mcpRes.rawText.includes("all instances are leased")) {
-        return "hv:a7df7452";
+        return await resolveDefaultSandboxId();
       }
       throw new Error(`MXC pool lease failed: ${mcpRes.rawText}`);
     }
@@ -299,7 +461,8 @@ export async function mxcPoolLease(holder = "eve-agent"): Promise<string> {
  * Automatically restores the VM to clean baseline snapshot, suspends it, and marks it Ready.
  */
 export async function mxcPoolRelease(sandboxId: string): Promise<boolean> {
-  if (process.env.MXC_MCP_URL) {
+  const cfg = await resolveMxcConfig();
+  if (cfg.mcpUrl || process.env.MXC_MCP_URL) {
     const mcpRes = await callMxcMcp("pool_release", { sandbox_id: sandboxId });
     if (mcpRes) return true;
   }
@@ -344,11 +507,9 @@ export async function mxcExecCommand(
   command: string,
   options: MxcExecOptions = {},
 ): Promise<MxcExecResult> {
-  if (process.env.MXC_MCP_URL) {
-    const requestedId =
-      options.sandboxId && options.sandboxId !== "auto"
-        ? options.sandboxId
-        : "hv:a7df7452";
+  const cfg = await resolveMxcConfig();
+  if (cfg.mcpUrl || process.env.MXC_MCP_URL) {
+    const requestedId = await resolveDefaultSandboxId(options.sandboxId);
 
     const mcpRes = await callMxcMcp("execute_command", {
       command,
@@ -360,18 +521,18 @@ export async function mxcExecCommand(
       throw new Error("Empty response from MXC FastMCP execute_command");
     }
 
-    // If a standby VM was selected and is currently Paused/not_started, fallback to active VM hv:a7df7452
-    if (
-      mcpRes.parsedJson?.error?.code === "not_started" &&
-      requestedId !== "hv:a7df7452"
-    ) {
-      const fallbackRes = await callMxcMcp("execute_command", {
-        command,
-        sandbox_id: "hv:a7df7452",
-        disposable: options.disposable ?? false,
-      });
-      if (fallbackRes) {
-        return parseMcpCommandOutput(fallbackRes.rawText, "hv:a7df7452");
+    // If a standby VM was selected and is currently Paused/not_started, fallback to discovered running VM
+    if (mcpRes.parsedJson?.error?.code === "not_started") {
+      const runningFallback = await resolveDefaultSandboxId(null);
+      if (runningFallback && runningFallback !== requestedId) {
+        const fallbackRes = await callMxcMcp("execute_command", {
+          command,
+          sandbox_id: runningFallback,
+          disposable: options.disposable ?? false,
+        });
+        if (fallbackRes) {
+          return parseMcpCommandOutput(fallbackRes.rawText, runningFallback);
+        }
       }
     }
 
@@ -382,12 +543,17 @@ export async function mxcExecCommand(
   let autoLeased = false;
 
   if (!targetSandboxId || targetSandboxId === "auto") {
-    targetSandboxId = await mxcPoolLease("eve-exec");
-    autoLeased = true;
+    if (cfg.defaultSandboxId && cfg.defaultSandboxId !== "auto") {
+      targetSandboxId = cfg.defaultSandboxId;
+    } else {
+      targetSandboxId = await mxcPoolLease("eve-exec");
+      autoLeased = true;
+    }
   }
 
-  const template =
-    process.env.MXC_REMOTE_REPO_ROOT
+  const template = cfg.repoRoot
+    ? `${cfg.repoRoot}\\exec.json`
+    : process.env.MXC_REMOTE_REPO_ROOT
       ? `${process.env.MXC_REMOTE_REPO_ROOT}\\exec.json`
       : getExecTemplatePath();
 
@@ -448,17 +614,19 @@ export async function mxcCaptureScreenshot(
   sandboxId?: string,
   destPath?: string,
 ): Promise<MxcScreenshotResult> {
-  if (process.env.MXC_MCP_URL) {
-    const targetId = sandboxId && sandboxId !== "auto" ? sandboxId : "hv:a7df7452";
+  const cfg = await resolveMxcConfig();
+  const resolvedId = await resolveDefaultSandboxId(sandboxId);
+
+  if (cfg.mcpUrl || process.env.MXC_MCP_URL) {
     const mcpRes = await callMxcMcp("capture_screenshot", {
-      sandbox_id: targetId,
+      sandbox_id: resolvedId,
       width: 1024,
       height: 768,
     });
     if (mcpRes) {
       if (mcpRes.parsedJson?.data_url) {
         return {
-          sandboxId: mcpRes.parsedJson.sandbox_id || targetId,
+          sandboxId: mcpRes.parsedJson.sandbox_id || resolvedId,
           imagePath: mcpRes.parsedJson.file_path || "",
           dataUrl: mcpRes.parsedJson.data_url,
           width: mcpRes.parsedJson.width || 1024,
@@ -468,7 +636,7 @@ export async function mxcCaptureScreenshot(
       const pathMatch = mcpRes.rawText.match(/Path:\s*(.+)/);
       const dimsMatch = mcpRes.rawText.match(/\((\d+)x(\d+),/);
       return {
-        sandboxId: targetId,
+        sandboxId: resolvedId,
         imagePath: pathMatch?.[1]?.trim() || "",
         dataUrl: "",
         width: dimsMatch ? Number.parseInt(dimsMatch[1], 10) : 1024,
@@ -477,20 +645,20 @@ export async function mxcCaptureScreenshot(
     }
   }
 
-  const repo = process.env.MXC_REMOTE_REPO_ROOT || getMxcRepoRoot();
+  const repo = cfg.repoRoot || process.env.MXC_REMOTE_REPO_ROOT || getMxcRepoRoot();
   const scriptPath = `${repo}\\scripts\\hyperv\\capture_screenshot.ps1`;
 
-  let vmName = "mxc-hv-a7df7452";
-  if (sandboxId && sandboxId.startsWith("hv:")) {
-    vmName = `mxc-hv-${sandboxId.replace(/^hv:/, "")}`;
-  }
+  const vmName = resolvedId.startsWith("hv:")
+    ? `mxc-hv-${resolvedId.replace(/^hv:/, "")}`
+    : resolvedId;
 
   const localOutPath = destPath || join(tmpdir(), `mxc-screen-${Date.now()}.png`);
   const remoteOutPath = `C:\\Windows\\Temp\\mxc-screen-${Date.now()}.png`;
+  const isRemote = Boolean(cfg.remoteHost || process.env.MXC_REMOTE_HOST);
 
   // Script captures the image and emits base64 directly to stdout
   const psScript = `
-    $out = '${process.env.MXC_REMOTE_HOST ? remoteOutPath : localOutPath}';
+    $out = '${isRemote ? remoteOutPath : localOutPath}';
     & "${scriptPath}" -VmName '${vmName}' -OutputPath $out | Out-Null;
     if (Test-Path $out) {
         [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($out))
@@ -507,12 +675,12 @@ export async function mxcCaptureScreenshot(
   }
 
   // If local, ensure file exists on disk
-  if (!process.env.MXC_REMOTE_HOST && !existsSync(localOutPath)) {
+  if (!isRemote && !existsSync(localOutPath)) {
     writeFileSync(localOutPath, Buffer.from(base64, "base64"));
   }
 
   return {
-    sandboxId: sandboxId || vmName,
+    sandboxId: resolvedId,
     imagePath: localOutPath,
     dataUrl: `data:image/png;base64,${base64}`,
     width: 1024,
@@ -527,10 +695,12 @@ export async function mxcCreateCheckpoint(
   sandboxId: string,
   checkpointName: string,
 ): Promise<void> {
-  if (process.env.MXC_MCP_URL) {
+  const cfg = await resolveMxcConfig();
+  const resolvedId = await resolveDefaultSandboxId(sandboxId);
+  if (cfg.mcpUrl || process.env.MXC_MCP_URL) {
     await callMxcMcp("create_checkpoint", {
       name: checkpointName,
-      sandbox_id: sandboxId || "hv:a7df7452",
+      sandbox_id: resolvedId,
     });
     return;
   }
@@ -540,7 +710,7 @@ export async function mxcCreateCheckpoint(
     "--hyperv-op",
     "checkpoint",
     "--hyperv-sandbox-id",
-    sandboxId,
+    resolvedId,
     "--hyperv-checkpoint-name",
     checkpointName,
   ]);
@@ -553,10 +723,12 @@ export async function mxcRestoreCheckpoint(
   sandboxId: string,
   checkpointName: string,
 ): Promise<void> {
-  if (process.env.MXC_MCP_URL) {
+  const cfg = await resolveMxcConfig();
+  const resolvedId = await resolveDefaultSandboxId(sandboxId);
+  if (cfg.mcpUrl || process.env.MXC_MCP_URL) {
     await callMxcMcp("rollback_checkpoint", {
       name: checkpointName,
-      sandbox_id: sandboxId || "hv:a7df7452",
+      sandbox_id: resolvedId,
     });
     return;
   }
@@ -566,7 +738,7 @@ export async function mxcRestoreCheckpoint(
     "--hyperv-op",
     "restore",
     "--hyperv-sandbox-id",
-    sandboxId,
+    resolvedId,
     "--hyperv-checkpoint-name",
     checkpointName,
   ]);
@@ -576,28 +748,28 @@ export async function mxcRestoreCheckpoint(
  * Set network connectivity (Default Switch) for hot-plugging internet or airgapping.
  */
 export async function mxcSetNetwork(
-  sandboxId: string,
+  sandboxId: string | undefined,
   enabled: boolean,
 ): Promise<{ sandboxId: string; connected: boolean }> {
-  const mode = getMxcTransportMode();
+  const cfg = await resolveMxcConfig();
+  const resolvedId = await resolveDefaultSandboxId(sandboxId);
 
-  if (mode === "mcp") {
+  if (cfg.mcpUrl || process.env.MXC_MCP_URL) {
     await callMxcMcp("set_network", {
       enabled,
-      sandbox_id: sandboxId || "hv:a7df7452",
+      sandbox_id: resolvedId,
     });
-    return { sandboxId, connected: enabled };
+    return { sandboxId: resolvedId, connected: enabled };
   }
 
-  let vmName = "mxc-hv-a7df7452";
-  if (sandboxId && sandboxId.startsWith("hv:")) {
-    vmName = `mxc-hv-${sandboxId.replace(/^hv:/, "")}`;
-  }
+  const vmName = resolvedId.startsWith("hv:")
+    ? `mxc-hv-${resolvedId.replace(/^hv:/, "")}`
+    : resolvedId;
 
   const psScript = enabled
     ? `Connect-VMNetworkAdapter -VMName '${vmName}' -SwitchName 'Default Switch' | Out-Null; 'connected'`
     : `Get-VMNetworkAdapter -VMName '${vmName}' | Disconnect-VMNetworkAdapter | Out-Null; 'disconnected'`;
 
   await runHostPowershell(psScript);
-  return { sandboxId, connected: enabled };
+  return { sandboxId: resolvedId, connected: enabled };
 }
