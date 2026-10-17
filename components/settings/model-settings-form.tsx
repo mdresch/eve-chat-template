@@ -230,14 +230,15 @@ export function ModelSettingsForm({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-4 sm:p-6">
-      <div>
-        <h1 className="text-lg font-semibold text-foreground">AI provider</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Choose which model your chats use. Configure a provider with your own API key, or stick with
-          the default — no key required.
-        </p>
-      </div>
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-4 pb-16 sm:p-6 sm:pb-20">
+        <div>
+          <h1 className="text-lg font-semibold text-foreground">AI provider</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Choose which model your chats use. Configure a provider with your own API key, or stick with
+            the default — no key required.
+          </p>
+        </div>
 
       <ProviderCard
         active={activeProvider === null}
@@ -433,6 +434,7 @@ export function ModelSettingsForm({
           provider={openSandboxDialog}
         />
       ) : null}
+      </div>
     </div>
   );
 }
