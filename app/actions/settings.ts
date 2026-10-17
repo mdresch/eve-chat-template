@@ -21,6 +21,8 @@ import {
   listGoogleModels,
   listMistralModels,
   listOpenAiCompatibleModels,
+  listVercelAiGatewayModels,
+  VERCEL_AI_GATEWAY_DEFAULT_BASE_URL,
 } from "@/lib/provider-models";
 import { getServerViewer } from "@/lib/session";
 
@@ -38,12 +40,13 @@ async function requireViewer() {
   return viewer;
 }
 
-function requireKey(credentials: { readonly apiKey?: string }) {
-  if (!credentials.apiKey) {
+function requireKey(credentials: { readonly apiKey?: string }, envFallback?: string) {
+  const resolved = credentials.apiKey || envFallback;
+  if (!resolved) {
     throw new Error("An API key is required.");
   }
 
-  return credentials.apiKey;
+  return resolved;
 }
 
 function requireBaseUrl(credentials: { readonly baseUrl?: string }) {
@@ -81,6 +84,11 @@ export async function listModelsForProviderAction(
       return listBifrostModels(requireBaseUrl(credentials), requireKey(credentials));
     case "merge-gateway":
       return listMergeGatewayModels(requireBaseUrl(credentials), requireKey(credentials));
+    case "ai-gateway":
+      return listVercelAiGatewayModels(
+        credentials.baseUrl || VERCEL_AI_GATEWAY_DEFAULT_BASE_URL,
+        requireKey(credentials, process.env.AI_GATEWAY_API_KEY),
+      );
   }
 }
 
@@ -126,6 +134,13 @@ export async function listModelsForStoredProviderAction(provider: Exclude<AiProv
     }
 
     return listMergeGatewayModels(credential.baseUrl, requireKey({ apiKey }));
+  }
+
+  if (provider === "ai-gateway") {
+    return listVercelAiGatewayModels(
+      credential.baseUrl || VERCEL_AI_GATEWAY_DEFAULT_BASE_URL,
+      requireKey({ apiKey }, process.env.AI_GATEWAY_API_KEY),
+    );
   }
 
   return listModelsForProviderAction(provider, { apiKey });
@@ -219,6 +234,19 @@ export async function testStoredProviderCredentialAction(provider: AiProvider) {
         }
 
         await listMergeGatewayModels(credential.baseUrl, requireKey({ apiKey }));
+      } else if (provider === "ai-gateway") {
+        await listVercelAiGatewayModels(
+          credential.baseUrl || VERCEL_AI_GATEWAY_DEFAULT_BASE_URL,
+          requireKey({ apiKey }, process.env.AI_GATEWAY_API_KEY),
+        );
+        if (credential.model) {
+          await generateText({
+            experimental_telemetry: { functionId: "stored_credential_test", isEnabled: true },
+            maxOutputTokens: 16,
+            model: buildModelFromCredential(credential),
+            prompt: "ping",
+          });
+        }
       } else {
         await listModelsForProviderAction(provider, { apiKey });
       }
@@ -231,6 +259,12 @@ export async function testStoredProviderCredentialAction(provider: AiProvider) {
       provider,
       userId: viewer.id,
     });
+    const detail = error instanceof Error ? error.message : "";
+    if (detail.includes("Free tier users do not have access")) {
+      throw new Error(
+        `Model "${credential.model}" requires paid AI Gateway credits. Select a Free Tier Ready model (e.g. openai/gpt-5-mini, openai/gpt-4.1, or google/gemini-2.5-flash).`,
+      );
+    }
     throw new Error(
       "Could not reach this provider with the saved credential. It may need to be re-configured.",
     );
@@ -255,13 +289,19 @@ export async function saveProviderCredentialAction(input: {
     throw new Error("Azure requires a resource name and deployment name.");
   }
 
-  if (BASE_URL_PROVIDERS.includes(input.provider) && !input.baseUrl) {
+  const effectiveBaseUrl =
+    input.provider === "ai-gateway"
+      ? (input.baseUrl || VERCEL_AI_GATEWAY_DEFAULT_BASE_URL)
+      : input.baseUrl;
+
+  if (BASE_URL_PROVIDERS.includes(input.provider) && !effectiveBaseUrl) {
     throw new Error("A base URL is required.");
   }
 
   const existing = await getUserProviderCredential(viewer.id, input.provider);
+  const hasEnvKey = input.provider === "ai-gateway" && Boolean(process.env.AI_GATEWAY_API_KEY);
 
-  if (!input.apiKey && !existing && !LOCAL_PROVIDERS.has(input.provider)) {
+  if (!input.apiKey && !existing && !LOCAL_PROVIDERS.has(input.provider) && !hasEnvKey) {
     throw new Error("An API key is required.");
   }
 
@@ -273,7 +313,7 @@ export async function saveProviderCredentialAction(input: {
   await upsertUserProviderCredential({
     azureApiVersion: input.azureApiVersion ?? null,
     azureResourceName: input.azureResourceName ?? null,
-    baseUrl: input.baseUrl ?? null,
+    baseUrl: effectiveBaseUrl ?? null,
     encryptedApiKey,
     model: input.model ?? null,
     provider: input.provider,

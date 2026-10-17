@@ -113,6 +113,7 @@ export const AI_PROVIDER_VALUES = [
   "foundry-local",
   "bifrost",
   "merge-gateway",
+  "ai-gateway",
 ] as const;
 export type AiProvider = (typeof AI_PROVIDER_VALUES)[number];
 
@@ -124,6 +125,7 @@ export const BASE_URL_PROVIDERS: readonly AiProvider[] = [
   "foundry-local",
   "bifrost",
   "merge-gateway",
+  "ai-gateway",
 ];
 
 export const userModelPreference = pgTable("user_model_preference", {

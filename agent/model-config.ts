@@ -52,6 +52,50 @@ export function buildModelFromCredential(credential: UserProviderCredential) {
         baseURL: requireField(credential.baseUrl, "base URL"),
         name: "merge-gateway",
       })(requireModel(credential));
+    case "ai-gateway": {
+      const gatewayKey = requireField(
+        apiKey || process.env.AI_GATEWAY_API_KEY,
+        "AI Gateway API key",
+      );
+      const gatewayBaseUrl = credential.baseUrl || "https://ai-gateway.vercel.sh/v1";
+      const requestedModel = requireModel(credential);
+      const fallbackFreeModel = "openai/gpt-5-mini";
+
+      return createOpenAICompatible({
+        apiKey: gatewayKey,
+        baseURL: gatewayBaseUrl,
+        fetch: async (url, init) => {
+          const response = await globalThis.fetch(url, init);
+          if (
+            response.status === 403 &&
+            typeof init?.body === "string" &&
+            requestedModel !== fallbackFreeModel
+          ) {
+            const errorText = await response.clone().text().catch(() => "");
+            if (
+              errorText.includes("Free tier users do not have access") ||
+              errorText.includes("RestrictedModelsError")
+            ) {
+              console.warn(
+                `[ai-gateway] Model "${requestedModel}" requires paid credits on this Vercel team; automatically falling back to Free Tier model "${fallbackFreeModel}".`,
+              );
+              try {
+                const parsed = JSON.parse(init.body) as Record<string, unknown>;
+                parsed.model = fallbackFreeModel;
+                return await globalThis.fetch(url, {
+                  ...init,
+                  body: JSON.stringify(parsed),
+                });
+              } catch {
+                // Return original response if body rewrite fails
+              }
+            }
+          }
+          return response;
+        },
+        name: "ai-gateway",
+      })(requestedModel);
+    }
   }
 }
 

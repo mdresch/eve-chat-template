@@ -14,6 +14,7 @@ Defined in `lib/db/schema.ts` as `AI_PROVIDER_VALUES`:
 
 | Provider | Needs API key | Needs base URL | Notes |
 | --- | --- | --- | --- |
+| `ai-gateway` | Yes (or `AI_GATEWAY_API_KEY`) | Pre-filled (`https://ai-gateway.vercel.sh/v1`) | Vercel AI Gateway (`npx vercel@latest ai-gateway setup`, defaults to `openai/gpt-6-astra`) |
 | `anthropic` | Yes | No | |
 | `google` | Yes | No | Google Gemini |
 | `mistral` | Yes | No | |
@@ -24,9 +25,9 @@ Defined in `lib/db/schema.ts` as `AI_PROVIDER_VALUES`:
 | `merge-gateway` | Yes | Yes | Merge Gateway (OpenAI-compatible) |
 
 `BASE_URL_PROVIDERS` (`lib/db/schema.ts`) is the list that needs a Base URL
-field in the UI: `ollama`, `foundry-local`, `bifrost`, `merge-gateway`. This is a separate
+field in the UI: `ollama`, `foundry-local`, `bifrost`, `merge-gateway`, `ai-gateway`. This is a separate
 concept from "key optional" — Ollama/Foundry Local commonly run with no key,
-Bifrost and Merge Gateway always need one.
+Bifrost, Merge Gateway, and Vercel AI Gateway require one (with `ai-gateway` also supporting `AI_GATEWAY_API_KEY` from the environment).
 
 ## Settings UI
 

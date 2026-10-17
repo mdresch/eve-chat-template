@@ -43,6 +43,7 @@ type CredentialSummary = {
 };
 
 const PROVIDER_LABELS: Record<AiProvider, string> = {
+  "ai-gateway": "Vercel AI Gateway",
   anthropic: "Anthropic",
   azure: "Azure AI Foundry",
   google: "Google Gemini",
@@ -57,6 +58,7 @@ const LOCAL_PROVIDERS = new Set<AiProvider>(["ollama", "foundry-local"]);
 const DEFAULT_LOCAL_BASE_URL: Record<string, string> = {
   ollama: "http://localhost:11434/v1",
   "foundry-local": "http://localhost:5273/v1",
+  "ai-gateway": "https://ai-gateway.vercel.sh/v1",
 };
 
 export function ModelSettingsForm({
@@ -299,6 +301,9 @@ function ProviderCard({
 
 function describeCredential(provider: AiProvider, credential: CredentialSummary | null) {
   if (!credential) {
+    if (provider === "ai-gateway") {
+      return "Route agent model requests through Vercel AI Gateway (ai-gateway.vercel.sh/v1). Not configured yet.";
+    }
     return LOCAL_PROVIDERS.has(provider)
       ? "Runs locally. Not configured yet."
       : "Bring your own API key. Not configured yet.";
@@ -316,6 +321,10 @@ function describeCredential(provider: AiProvider, credential: CredentialSummary 
     return `${credential.baseUrl} · ${credential.model ?? "Configured"}`;
   }
 
+  if (provider === "ai-gateway") {
+    return `${credential.baseUrl ?? "https://ai-gateway.vercel.sh/v1"} · ${credential.model ?? "openai/gpt-6-astra"}`;
+  }
+
   return credential.model ?? "Configured";
 }
 
@@ -331,6 +340,7 @@ function ConfigureDialog({
   readonly provider: AiProvider;
 }) {
   const isAzure = provider === "azure";
+  const isAiGateway = provider === "ai-gateway";
   const isLocal = LOCAL_PROVIDERS.has(provider);
   // Base URL field applies more broadly than "runs locally" (e.g. a self-hosted
   // Bifrost gateway isn't local, but still needs an endpoint to point at).
@@ -350,7 +360,9 @@ function ConfigureDialog({
   const [azureApiVersion, setAzureApiVersion] = useState(existingCredential?.azureApiVersion ?? "");
   const [models, setModels] = useState<ProviderModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState(
-    !isAzure ? (existingCredential?.model ?? "") : "",
+    !isAzure
+      ? (existingCredential?.model ?? (isAiGateway ? "openai/gpt-5-mini" : ""))
+      : "",
   );
   const [status, setStatus] = useState<{ message: string; ok: boolean } | null>(null);
   const [isFetching, setIsFetching] = useState(false);
@@ -447,7 +459,7 @@ function ConfigureDialog({
 
   return (
     <Dialog onOpenChange={(open) => !open && onClose()} open>
-      <DialogContent>
+      <DialogContent className={cn(isAiGateway && "sm:max-w-lg")}>
         <DialogHeader>
           <DialogTitle>
             {isEditing ? "Edit" : "Configure"} {PROVIDER_LABELS[provider]}
@@ -462,6 +474,63 @@ function ConfigureDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
+          {isAiGateway ? (
+            <div className="rounded-md border border-border/80 bg-muted/30 p-3 text-xs text-muted-foreground space-y-2">
+              <p className="font-medium text-foreground">
+                Route a coding agent through{" "}
+                <a
+                  className="underline underline-offset-2 hover:text-foreground"
+                  href="https://vercel.com/docs/ai-gateway/getting-started#route-a-coding-agent-through-ai-gateway"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Vercel AI Gateway
+                </a>
+              </p>
+              <p>
+                Connect local coding agents (such as Claude Code) via the Vercel CLI, or create an{" "}
+                <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">AI_GATEWAY_API_KEY</code>:
+              </p>
+              <pre className="overflow-x-auto rounded bg-background/80 px-2.5 py-1.5 font-mono text-[11px] text-foreground border border-border/60">
+                npx vercel@latest ai-gateway setup
+              </pre>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 pt-0.5">
+                <a
+                  className="underline underline-offset-2 hover:text-foreground"
+                  href="https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys%3FshowCreateKeyModal%3Dtrue&title=AI+Gateway+API+Keys"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Create API Key
+                </a>
+                <a
+                  className="underline underline-offset-2 hover:text-foreground"
+                  href="https://vercel.com/ai-gateway/models?freeTier=true"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Free-tier models
+                </a>
+                <a
+                  className="underline underline-offset-2 hover:text-foreground"
+                  href="https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Flogs&title=AI+Gateway+Logs"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  AI Gateway Logs
+                </a>
+                <a
+                  className="underline underline-offset-2 hover:text-foreground"
+                  href="https://vercel.com/docs/ai-gateway/coding-agents"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Coding Agents docs
+                </a>
+              </div>
+            </div>
+          ) : null}
+
           {showsBaseUrl ? (
             <Field label="Base URL">
               <Input
@@ -502,7 +571,9 @@ function ConfigureDialog({
                 ? "API key (optional)"
                 : isEditing
                   ? "API key (leave blank to keep current)"
-                  : "API key"
+                  : isAiGateway
+                    ? "AI_GATEWAY_API_KEY (or leave blank if exported in environment)"
+                    : "API key"
             }
           >
             <Input
@@ -514,10 +585,21 @@ function ConfigureDialog({
                 setApiKey(event.target.value);
                 setAzureTested(false);
               }}
+              placeholder={isAiGateway ? "vck_..." : undefined}
               type="password"
               value={apiKey}
             />
           </Field>
+
+          {isAiGateway ? (
+            <Field label="Model slug (or click Fetch models below)">
+              <Input
+                onChange={(event) => setSelectedModel(event.target.value)}
+                placeholder="openai/gpt-6-astra"
+                value={selectedModel}
+              />
+            </Field>
+          ) : null}
 
           {!isAzure ? (
             <div className="flex items-center gap-2">

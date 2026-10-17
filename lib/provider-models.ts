@@ -167,3 +167,105 @@ export async function listMergeGatewayModels(
     throw new Error("Could not reach your Merge Gateway. Check the base URL and key.");
   }
 }
+
+export const VERCEL_AI_GATEWAY_DEFAULT_BASE_URL = "https://ai-gateway.vercel.sh/v1";
+
+export async function listVercelAiGatewayModels(
+  baseUrl: string = VERCEL_AI_GATEWAY_DEFAULT_BASE_URL,
+  apiKey: string,
+): Promise<ProviderModelOption[]> {
+  try {
+    const endpoint = `${(baseUrl || VERCEL_AI_GATEWAY_DEFAULT_BASE_URL).replace(/\/+$/, "")}/models`;
+    const res = await fetch(endpoint, {
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+      },
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "");
+      throw new Error(
+        `Vercel AI Gateway returned ${res.status}: ${errorText || "Check your AI_GATEWAY_API_KEY and base URL."}`,
+      );
+    }
+
+    const json = (await res.json()) as {
+      data?: Array<{
+        id?: string;
+        name?: string;
+        display_name?: string;
+        type?: string;
+        context_window?: number;
+        max_input_tokens?: number;
+        max_tokens?: number;
+      }>;
+      models?: Array<{
+        id?: string;
+        name?: string;
+        display_name?: string;
+        type?: string;
+        context_window?: number;
+        max_input_tokens?: number;
+        max_tokens?: number;
+      }>;
+    };
+
+    const rawModels = Array.isArray(json.data)
+      ? json.data
+      : Array.isArray(json.models)
+        ? json.models
+        : [];
+
+    const freeTierVerifiedIds = new Set([
+      "openai/gpt-5-mini",
+      "openai/gpt-5-nano",
+      "openai/gpt-4.1",
+      "openai/gpt-4.1-mini",
+      "openai/gpt-4.1-nano",
+      "openai/gpt-4o",
+      "openai/gpt-4o-mini",
+      "google/gemini-2.5-flash",
+      "meta/llama-3.3-70b",
+      "alibaba/qwen-3-14b",
+      "mistral/mistral-small",
+      "nvidia/nemotron-3.5-lightning-free",
+      "poolside/laguna-s-2.1-free",
+    ]);
+
+    const options: ProviderModelOption[] = rawModels
+      .filter((m) => !m.type || m.type === "language")
+      .map((m) => {
+        if (!m.id) return null;
+        const baseLabel = m.name ?? m.display_name ?? m.id;
+        const isFreeTier = freeTierVerifiedIds.has(m.id);
+        return {
+          id: m.id,
+          inputTokenLimit: m.context_window ?? m.max_input_tokens ?? undefined,
+          label: isFreeTier ? `${baseLabel} (${m.id} · Free Tier Ready)` : `${baseLabel} (${m.id})`,
+          outputTokenLimit: m.max_tokens ?? undefined,
+        } as ProviderModelOption;
+      })
+      .filter((m): m is ProviderModelOption => m !== null)
+      .sort((a, b) => {
+        const aFree = freeTierVerifiedIds.has(a.id) ? 0 : 1;
+        const bFree = freeTierVerifiedIds.has(b.id) ? 0 : 1;
+        if (aFree !== bFree) return aFree - bFree;
+        return a.id.localeCompare(b.id);
+      });
+
+    // Ensure the featured getting-started slug (openai/gpt-6-astra) is also selectable
+    if (!options.some((m) => m.id === "openai/gpt-6-astra")) {
+      options.push({
+        id: "openai/gpt-6-astra",
+        label: "openai/gpt-6-astra (Paid Credits Only)",
+      });
+    }
+
+    return options;
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Vercel AI Gateway error: ${error.message}`);
+    }
+    throw new Error("Could not reach Vercel AI Gateway. Check your API key and base URL.");
+  }
+}

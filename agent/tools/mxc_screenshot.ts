@@ -22,7 +22,9 @@ export default defineTool({
       dataUrl: shot.dataUrl,
       width: shot.width,
       height: shot.height,
-      preview: `![Guest Desktop (${shot.sandboxId})](${shot.dataUrl})`,
+      preview: shot.dataUrl
+        ? `![Guest Desktop (${shot.sandboxId})](${shot.dataUrl})`
+        : `Captured ${shot.width}x${shot.height} screenshot on Hyper-V host at ${shot.imagePath}`,
     };
   },
 });

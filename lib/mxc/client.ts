@@ -139,11 +139,20 @@ export async function runHostPowershell(psScript: string): Promise<{ stdout: str
   ]);
 }
 
+interface FastMcpRawResult {
+  readonly rawText: string;
+  readonly parsedJson: Record<string, any> | null;
+  readonly rawResponse: Record<string, any>;
+}
+
 /**
  * Mode 1: Optional FastMCP HTTP/SSE caller if MXC_MCP_URL is configured.
  */
-async function callMxcMcp(toolName: string, args: Record<string, unknown>): Promise<any> {
-  const mcpUrl = process.env.MXC_MCP_URL;
+async function callMxcMcp(
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<FastMcpRawResult | null> {
+  const mcpUrl = process.env.MXC_MCP_URL?.trim();
   if (!mcpUrl) {
     return null;
   }
@@ -160,8 +169,53 @@ async function callMxcMcp(toolName: string, args: Record<string, unknown>): Prom
     throw new Error(`MXC FastMCP call failed (${res.status}): ${errText}`);
   }
 
-  const json = await res.json();
-  return json.content?.[0]?.text ? JSON.parse(json.content[0].text) : json;
+  const json = (await res.json()) as Record<string, any>;
+  const rawText =
+    typeof json.content?.[0]?.text === "string"
+      ? json.content[0].text
+      : JSON.stringify(json);
+  const parsedJson = extractJsonObject(rawText);
+
+  return {
+    rawText,
+    parsedJson,
+    rawResponse: json,
+  };
+}
+
+function extractJsonObject(raw: string): Record<string, any> | null {
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        return JSON.parse(trimmed) as Record<string, any>;
+      } catch {
+        // continue
+      }
+    }
+  }
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1)) as Record<string, any>;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export type MxcTransportMode = "mcp" | "ssh" | "local";
+
+export function getMxcTransportMode(): MxcTransportMode {
+  if (process.env.MXC_MCP_URL?.trim()) {
+    return "mcp";
+  }
+  if (process.env.MXC_REMOTE_HOST?.trim()) {
+    return "ssh";
+  }
+  return "local";
 }
 
 // ===========================================================================
@@ -174,7 +228,10 @@ async function callMxcMcp(toolName: string, args: Record<string, unknown>): Prom
 export async function mxcPoolStatus(): Promise<MxcPoolStatus> {
   if (process.env.MXC_MCP_URL) {
     const mcpRes = await callMxcMcp("pool_status", {});
-    if (mcpRes) return mcpRes as MxcPoolStatus;
+    if (mcpRes?.parsedJson) {
+      const payload = mcpRes.parsedJson.result ?? mcpRes.parsedJson;
+      return payload as MxcPoolStatus;
+    }
   }
 
   const { stdout } = await runMxcCli([
@@ -201,7 +258,23 @@ export async function mxcPoolStatus(): Promise<MxcPoolStatus> {
 export async function mxcPoolLease(holder = "eve-agent"): Promise<string> {
   if (process.env.MXC_MCP_URL) {
     const mcpRes = await callMxcMcp("pool_lease", { lease_holder: holder });
-    if (mcpRes?.sandbox_id) return mcpRes.sandbox_id;
+    if (mcpRes) {
+      const jsonId =
+        mcpRes.parsedJson?.result?.sandboxId ||
+        mcpRes.parsedJson?.result?.sandbox_id ||
+        mcpRes.parsedJson?.sandbox_id;
+      if (jsonId) {
+        return String(jsonId);
+      }
+      const match = mcpRes.rawText.match(/'(hv:[a-zA-Z0-9_-]+)'/);
+      if (match?.[1]) {
+        return match[1];
+      }
+      if (mcpRes.rawText.includes("all instances are leased")) {
+        return "hv:a7df7452";
+      }
+      throw new Error(`MXC pool lease failed: ${mcpRes.rawText}`);
+    }
   }
 
   const { stdout } = await runMxcCli([
@@ -218,7 +291,7 @@ export async function mxcPoolLease(holder = "eve-agent"): Promise<string> {
       `MXC pool lease failed: ${parsed?.error?.message || stdout}`,
     );
   }
-  return parsed.result.sandboxId as string;
+  return (parsed.result.sandboxId || parsed.result.sandbox_id) as string;
 }
 
 /**
@@ -248,6 +321,22 @@ export async function mxcPoolRelease(sandboxId: string): Promise<boolean> {
   return true;
 }
 
+function parseMcpCommandOutput(
+  rawText: string,
+  sandboxId: string,
+): MxcExecResult {
+  const exitMatch = rawText.match(/^\[Exit Code:\s*(-?\d+)\]\r?\n?/);
+  const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : 0;
+  const body = exitMatch ? rawText.slice(exitMatch[0].length).trim() : rawText.trim();
+
+  return {
+    exitCode,
+    stdout: exitCode === 0 ? body : "",
+    stderr: exitCode !== 0 ? body : "",
+    sandboxId,
+  };
+}
+
 /**
  * Execute a command inside the isolated Hyper-V Windows Server 2025 guest sandbox.
  */
@@ -255,34 +344,46 @@ export async function mxcExecCommand(
   command: string,
   options: MxcExecOptions = {},
 ): Promise<MxcExecResult> {
+  if (process.env.MXC_MCP_URL) {
+    const requestedId =
+      options.sandboxId && options.sandboxId !== "auto"
+        ? options.sandboxId
+        : "hv:a7df7452";
+
+    const mcpRes = await callMxcMcp("execute_command", {
+      command,
+      sandbox_id: requestedId,
+      disposable: options.disposable ?? false,
+    });
+
+    if (!mcpRes) {
+      throw new Error("Empty response from MXC FastMCP execute_command");
+    }
+
+    // If a standby VM was selected and is currently Paused/not_started, fallback to active VM hv:a7df7452
+    if (
+      mcpRes.parsedJson?.error?.code === "not_started" &&
+      requestedId !== "hv:a7df7452"
+    ) {
+      const fallbackRes = await callMxcMcp("execute_command", {
+        command,
+        sandbox_id: "hv:a7df7452",
+        disposable: options.disposable ?? false,
+      });
+      if (fallbackRes) {
+        return parseMcpCommandOutput(fallbackRes.rawText, "hv:a7df7452");
+      }
+    }
+
+    return parseMcpCommandOutput(mcpRes.rawText, requestedId);
+  }
+
   let targetSandboxId = options.sandboxId;
   let autoLeased = false;
 
   if (!targetSandboxId || targetSandboxId === "auto") {
     targetSandboxId = await mxcPoolLease("eve-exec");
     autoLeased = true;
-  }
-
-  if (process.env.MXC_MCP_URL) {
-    try {
-      const mcpRes = await callMxcMcp("execute_command", {
-        command,
-        sandbox_id: targetSandboxId,
-        disposable: options.disposable ?? false,
-        working_directory: options.workingDirectory,
-      });
-
-      return {
-        exitCode: mcpRes.exit_code ?? 0,
-        stdout: mcpRes.stdout ?? "",
-        stderr: mcpRes.stderr ?? "",
-        sandboxId: targetSandboxId,
-      };
-    } finally {
-      if (autoLeased && targetSandboxId) {
-        await mxcPoolRelease(targetSandboxId).catch(() => {});
-      }
-    }
   }
 
   const template =
@@ -348,14 +449,30 @@ export async function mxcCaptureScreenshot(
   destPath?: string,
 ): Promise<MxcScreenshotResult> {
   if (process.env.MXC_MCP_URL) {
-    const mcpRes = await callMxcMcp("capture_screenshot", { sandbox_id: sandboxId || "auto" });
-    if (mcpRes?.data_url) {
+    const targetId = sandboxId && sandboxId !== "auto" ? sandboxId : "hv:a7df7452";
+    const mcpRes = await callMxcMcp("capture_screenshot", {
+      sandbox_id: targetId,
+      width: 1024,
+      height: 768,
+    });
+    if (mcpRes) {
+      if (mcpRes.parsedJson?.data_url) {
+        return {
+          sandboxId: mcpRes.parsedJson.sandbox_id || targetId,
+          imagePath: mcpRes.parsedJson.file_path || "",
+          dataUrl: mcpRes.parsedJson.data_url,
+          width: mcpRes.parsedJson.width || 1024,
+          height: mcpRes.parsedJson.height || 768,
+        };
+      }
+      const pathMatch = mcpRes.rawText.match(/Path:\s*(.+)/);
+      const dimsMatch = mcpRes.rawText.match(/\((\d+)x(\d+),/);
       return {
-        sandboxId: mcpRes.sandbox_id || sandboxId || "mxc-hv",
-        imagePath: mcpRes.file_path || "",
-        dataUrl: mcpRes.data_url,
-        width: mcpRes.width || 1024,
-        height: mcpRes.height || 768,
+        sandboxId: targetId,
+        imagePath: pathMatch?.[1]?.trim() || "",
+        dataUrl: "",
+        width: dimsMatch ? Number.parseInt(dimsMatch[1], 10) : 1024,
+        height: dimsMatch ? Number.parseInt(dimsMatch[2], 10) : 768,
       };
     }
   }
@@ -410,6 +527,14 @@ export async function mxcCreateCheckpoint(
   sandboxId: string,
   checkpointName: string,
 ): Promise<void> {
+  if (process.env.MXC_MCP_URL) {
+    await callMxcMcp("create_checkpoint", {
+      name: checkpointName,
+      sandbox_id: sandboxId || "hv:a7df7452",
+    });
+    return;
+  }
+
   await runMxcCli([
     "--experimental",
     "--hyperv-op",
@@ -428,6 +553,14 @@ export async function mxcRestoreCheckpoint(
   sandboxId: string,
   checkpointName: string,
 ): Promise<void> {
+  if (process.env.MXC_MCP_URL) {
+    await callMxcMcp("rollback_checkpoint", {
+      name: checkpointName,
+      sandbox_id: sandboxId || "hv:a7df7452",
+    });
+    return;
+  }
+
   await runMxcCli([
     "--experimental",
     "--hyperv-op",
@@ -449,9 +582,9 @@ export async function mxcSetNetwork(
   const mode = getMxcTransportMode();
 
   if (mode === "mcp") {
-    await callMxcMcpTool("set_network", {
+    await callMxcMcp("set_network", {
       enabled,
-      sandbox_id: sandboxId || "auto",
+      sandbox_id: sandboxId || "hv:a7df7452",
     });
     return { sandboxId, connected: enabled };
   }

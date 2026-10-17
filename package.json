@@ -71,10 +71,5 @@
     "drizzle-kit": "0.31.9",
     "microsandbox": "^0.5.7",
     "typescript": "5.9.3"
-  },
-  "pnpm": {
-    "patchedDependencies": {
-      "eve@0.27.6": "patches/eve@0.27.6.patch"
-    }
   }
 }
