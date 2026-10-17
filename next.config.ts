@@ -4,6 +4,7 @@ import { withEve } from "eve/next";
 
 const nextConfig: NextConfig = {
   cacheComponents: true,
+  allowedDevOrigins: ["192.168.178.58"],
   turbopack: {
     root: process.cwd(),
   },

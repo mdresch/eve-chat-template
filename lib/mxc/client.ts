@@ -20,11 +20,32 @@ export function getMxcRepoRoot(): string {
   if (process.env.MXC_REPO_ROOT && existsSync(process.env.MXC_REPO_ROOT)) {
     return process.env.MXC_REPO_ROOT;
   }
-  const defaultPath = "C:\\Users\\MennoDrescher\\source\\repos\\mxc";
-  if (existsSync(defaultPath)) {
-    return defaultPath;
+  const candidates = [
+    "C:\\Users\\MennoDrescher\\source\\repos\\mxc",
+    "D:\\Source\\repos\\mxc",
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
   }
   return process.cwd();
+}
+
+export function getRemoteMxcRepoRoot(): string {
+  return (
+    process.env.MXC_REMOTE_REPO_ROOT?.trim() ||
+    process.env.MXC_REPO_ROOT?.trim() ||
+    "C:\\Users\\MennoDrescher\\source\\repos\\mxc"
+  );
+}
+
+export function getRemoteMxcExecPath(): string {
+  if (process.env.MXC_REMOTE_EXEC_PATH?.trim()) {
+    return process.env.MXC_REMOTE_EXEC_PATH.trim();
+  }
+  const remoteRepo = getRemoteMxcRepoRoot().replace(/[\\/]+$/, "");
+  return `${remoteRepo}\\src\\target\\debug\\wxc-exec.exe`;
 }
 
 export function getMxcExecPath(): string {
@@ -59,8 +80,8 @@ export function getExecTemplatePath(): string {
           process: { commandLine: "cmd.exe /c echo ok" },
         },
         null,
-        2
-      )
+        2,
+      ),
     );
   }
   return fallback;
@@ -162,9 +183,14 @@ export async function mxcPoolStatus(): Promise<MxcPoolStatus> {
     "pool-status",
   ]);
 
-  const parsed = JSON.parse(stdout);
+  const parsed = extractJsonObject(stdout);
+  if (!parsed) {
+    throw new Error(`MXC pool status returned invalid JSON: ${stdout}`);
+  }
   if (parsed.error) {
-    throw new Error(`MXC pool status failed: ${parsed.error.message || JSON.stringify(parsed.error)}`);
+    throw new Error(
+      `MXC pool status failed: ${parsed.error.message || JSON.stringify(parsed.error)}`,
+    );
   }
   return parsed.result as MxcPoolStatus;
 }
@@ -186,9 +212,11 @@ export async function mxcPoolLease(holder = "eve-agent"): Promise<string> {
     holder,
   ]);
 
-  const parsed = JSON.parse(stdout);
-  if (parsed.error) {
-    throw new Error(`MXC pool lease failed: ${parsed.error.message || JSON.stringify(parsed.error)}`);
+  const parsed = extractJsonObject(stdout);
+  if (!parsed || parsed.error) {
+    throw new Error(
+      `MXC pool lease failed: ${parsed?.error?.message || stdout}`,
+    );
   }
   return parsed.result.sandboxId as string;
 }
@@ -211,9 +239,11 @@ export async function mxcPoolRelease(sandboxId: string): Promise<boolean> {
     sandboxId,
   ]);
 
-  const parsed = JSON.parse(stdout);
-  if (parsed.error) {
-    throw new Error(`MXC pool release failed: ${parsed.error.message || JSON.stringify(parsed.error)}`);
+  const parsed = extractJsonObject(stdout);
+  if (parsed?.error) {
+    throw new Error(
+      `MXC pool release failed: ${parsed.error.message || JSON.stringify(parsed.error)}`,
+    );
   }
   return true;
 }
@@ -223,7 +253,7 @@ export async function mxcPoolRelease(sandboxId: string): Promise<boolean> {
  */
 export async function mxcExecCommand(
   command: string,
-  options: MxcExecOptions = {}
+  options: MxcExecOptions = {},
 ): Promise<MxcExecResult> {
   let targetSandboxId = options.sandboxId;
   let autoLeased = false;
@@ -315,7 +345,7 @@ export async function mxcExecCommand(
  */
 export async function mxcCaptureScreenshot(
   sandboxId?: string,
-  destPath?: string
+  destPath?: string,
 ): Promise<MxcScreenshotResult> {
   if (process.env.MXC_MCP_URL) {
     const mcpRes = await callMxcMcp("capture_screenshot", { sandbox_id: sandboxId || "auto" });
@@ -378,7 +408,7 @@ export async function mxcCaptureScreenshot(
  */
 export async function mxcCreateCheckpoint(
   sandboxId: string,
-  checkpointName: string
+  checkpointName: string,
 ): Promise<void> {
   await runMxcCli([
     "--experimental",
@@ -396,7 +426,7 @@ export async function mxcCreateCheckpoint(
  */
 export async function mxcRestoreCheckpoint(
   sandboxId: string,
-  checkpointName: string
+  checkpointName: string,
 ): Promise<void> {
   await runMxcCli([
     "--experimental",
@@ -414,8 +444,18 @@ export async function mxcRestoreCheckpoint(
  */
 export async function mxcSetNetwork(
   sandboxId: string,
-  enabled: boolean
+  enabled: boolean,
 ): Promise<{ sandboxId: string; connected: boolean }> {
+  const mode = getMxcTransportMode();
+
+  if (mode === "mcp") {
+    await callMxcMcpTool("set_network", {
+      enabled,
+      sandbox_id: sandboxId || "auto",
+    });
+    return { sandboxId, connected: enabled };
+  }
+
   let vmName = "mxc-hv-a7df7452";
   if (sandboxId && sandboxId.startsWith("hv:")) {
     vmName = `mxc-hv-${sandboxId.replace(/^hv:/, "")}`;

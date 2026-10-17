@@ -45,7 +45,12 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isChatTurnSettledEvent } from "@/lib/chat/events";
 import { getChatMessageLengthError } from "@/lib/chat/limits";
-import { findLatestSandboxContainerName } from "@/lib/chat/sandbox";
+import {
+  findLatestSandboxContainerName,
+  findSandboxContainerNameFromEvents,
+} from "@/lib/chat/sandbox";
+import { SandboxTelemetryBadge } from "@/components/chat/sandbox-telemetry-badge";
+import { TaskProgressIndicator } from "@/components/chat/task-progress";
 import type { ActiveChat, SetupStatus, Viewer } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
 
@@ -1007,8 +1012,17 @@ export function AgentChatSession({
         setStreamEvents(nextStreamEvents);
       }
 
-      if (displayEvent.type === "authorization.required") {
+      if (
+        displayEvent.type === "authorization.required" ||
+        displayEvent.type === "turn.failed" ||
+        displayEvent.type === "session.failed" ||
+        displayEvent.type === "turn.completed"
+      ) {
         stopFinalizingTurn();
+      }
+
+      if (displayEvent.type === "turn.failed" || displayEvent.type === "session.failed") {
+        setResumeFailed(true);
       }
 
       const chatId = activeChatIdRef.current;
@@ -1090,8 +1104,10 @@ export function AgentChatSession({
   const displayData = useMemo(() => reduceEventsToMessageData(displayEvents), [displayEvents]);
   const displayMessages = displayData.messages;
   const derivedSandboxContainerName = useMemo(
-    () => findLatestSandboxContainerName(displayMessages),
-    [displayMessages],
+    () =>
+      findSandboxContainerNameFromEvents(displayEvents) ??
+      findLatestSandboxContainerName(displayMessages),
+    [displayEvents, displayMessages],
   );
   // Prefer the server-recorded value (set by agent/sandbox.ts's onSession and
   // agent/tools/bash.ts, keyed by eve sessionId) — it's a stable source of
@@ -1829,7 +1845,10 @@ export function AgentChatSession({
       ) : (
         <>
           {isChatRoute ? (
-            <SessionHeader containerName={sandboxContainerName} />
+            <SessionHeader
+              containerName={sandboxContainerName}
+              isRunning={isBusy}
+            />
           ) : null}
           {isEmpty ? (
             <BlankChatBody />
@@ -1864,7 +1883,12 @@ export function AgentChatSession({
                   <TurnRetryPrompt onRetry={handleRetryResume} />
                 ) : null}
                 {thinkingPresence.shouldRender ? (
-                  <ThinkingMessage isVisible={thinkingPresence.isVisible} />
+                  <ThinkingMessage
+                    containerName={sandboxContainerName}
+                    events={displayEvents}
+                    isStreaming={isBusy}
+                    isVisible={thinkingPresence.isVisible}
+                  />
                 ) : null}
               </ChatConversationContent>
               <ChatScrollButton />
@@ -2361,24 +2385,42 @@ function useThinkingPresence(active: boolean) {
   return { isVisible, shouldRender };
 }
 
-function ThinkingMessage({ isVisible }: { readonly isVisible: boolean }) {
+function ThinkingMessage({
+  containerName,
+  events,
+  isStreaming = false,
+  isVisible,
+}: {
+  readonly containerName?: string | null;
+  readonly events: readonly HandleMessageStreamEvent[];
+  readonly isStreaming?: boolean;
+  readonly isVisible: boolean;
+}) {
   return (
     <article
       aria-live={isVisible ? "polite" : "off"}
       className={[
-        "flex w-full justify-start overflow-hidden transition-[opacity,transform,max-height] duration-200 ease-out",
-        isVisible ? "max-h-8 translate-y-0 opacity-100" : "max-h-0 -translate-y-1 opacity-0",
+        "flex w-full justify-start overflow-hidden px-3 transition-[opacity,transform] duration-200 ease-out",
+        isVisible ? "translate-y-0 opacity-100" : "-translate-y-1 opacity-0 pointer-events-none",
       ].join(" ")}
       role="status"
     >
-      <div className="px-3 text-[15px] font-medium leading-6 text-muted-foreground">
-        <span className="shimmer-text">Thinking...</span>
-      </div>
+      <TaskProgressIndicator
+        containerName={containerName}
+        events={events}
+        isStreaming={isStreaming}
+      />
     </article>
   );
 }
 
-function SessionHeader({ containerName }: { readonly containerName: string | null }) {
+function SessionHeader({
+  containerName,
+  isRunning = false,
+}: {
+  readonly containerName: string | null;
+  readonly isRunning?: boolean;
+}) {
   if (!containerName) {
     return <div className="h-12 shrink-0" />;
   }
@@ -2396,26 +2438,29 @@ function SessionHeader({ containerName }: { readonly containerName: string | nul
   // absolutely-positioned top bar (share button, sidebar toggle) so this
   // button renders just below it instead of overlapping in the same corner.
   return (
-    <div className="flex shrink-0 items-center justify-end px-3 pt-14 pb-2 md:pt-8">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            asChild
-            aria-label="Open in VS Code"
-            className="text-muted-foreground hover:text-foreground"
-            size="icon-sm"
-            variant="ghost"
-          >
-            <a href={vsCodeAttachHref}>
-              <ExternalLinkIcon className="size-4" />
-            </a>
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">
-          Open <span className="font-mono">{containerName}</span> in VS Code — unofficial deep
-          link, requires the Dev Containers extension
-        </TooltipContent>
-      </Tooltip>
+    <div className="flex shrink-0 items-center justify-end gap-1.5 px-3 pt-14 pb-2 md:pt-8">
+      <SandboxTelemetryBadge containerName={containerName} isRunning={isRunning} />
+      {!containerName.startsWith("hv:") ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              asChild
+              aria-label="Open in VS Code"
+              className="text-muted-foreground hover:text-foreground"
+              size="icon-sm"
+              variant="ghost"
+            >
+              <a href={vsCodeAttachHref}>
+                <ExternalLinkIcon className="size-4" />
+              </a>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            Open <span className="font-mono">{containerName}</span> in VS Code — unofficial deep
+            link, requires the Dev Containers extension
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
     </div>
   );
 }

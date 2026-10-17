@@ -17,6 +17,7 @@ const SETTLED_READY_EVENT_TYPES = new Set([
   "authorization.required",
   "session.completed",
   "session.waiting",
+  "turn.completed",
 ]);
 
 function deriveChatStatus({
@@ -536,6 +537,35 @@ export async function getUserModelPreference(userId: string): Promise<AiProvider
     .limit(1);
 
   return row?.activeProvider ?? null;
+}
+
+export async function getDefaultDevUserPreference(): Promise<{ userId: string; activeProvider: AiProvider } | null> {
+  const [row] = await db
+    .select({
+      activeProvider: userModelPreference.activeProvider,
+      userId: userModelPreference.userId,
+    })
+    .from(userModelPreference)
+    .where(sql`${userModelPreference.activeProvider} IS NOT NULL`)
+    .limit(1);
+
+  if (row?.activeProvider) {
+    return { activeProvider: row.activeProvider, userId: row.userId };
+  }
+
+  const [credRow] = await db
+    .select({
+      provider: userProviderCredential.provider,
+      userId: userProviderCredential.userId,
+    })
+    .from(userProviderCredential)
+    .limit(1);
+
+  if (credRow) {
+    return { activeProvider: credRow.provider, userId: credRow.userId };
+  }
+
+  return null;
 }
 
 export async function getUserProviderCredential(userId: string, provider: AiProvider) {

@@ -16,6 +16,7 @@ import {
 } from "@/app/_components/agent-chat-events";
 import { useChatShell } from "@/app/_components/chat-shell-context";
 import { ChatComposer } from "@/components/chat/composer";
+import { PromptQueueBadge } from "@/components/chat/prompt-queue-badge";
 import {
   clearPendingChatMessage,
   isProvisionalChatId,
@@ -43,11 +44,13 @@ export function SessionChatPage({
   const [controllerReady, setControllerReady] = useState(false);
   const [controllerStatus, setControllerStatus] = useState(IDLE_CONTROLLER_STATUS);
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
+  const [promptQueue, setPromptQueue] = useState<string[]>([]);
   const [clientError, setClientError] = useState<string | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const controllerRef = useRef<AgentChatController | null>(null);
   const currentChatIdRef = useRef(chatId);
   const pendingConsumedRef = useRef(false);
+  const isDispatchingRef = useRef(false);
   const provisionalCreateStartedRef = useRef(new Set<string>());
   const settledPendingMessagesRef = useRef(new Set<string>());
   const isProvisionalChat = isProvisionalChatId(chatId);
@@ -66,7 +69,9 @@ export function SessionChatPage({
     setActiveChat(null);
     setDraft("");
     setPendingUserMessage(null);
+    setPromptQueue([]);
     pendingConsumedRef.current = false;
+    isDispatchingRef.current = false;
     settledPendingMessagesRef.current = new Set();
   }, [chatId]);
 
@@ -300,6 +305,53 @@ export function SessionChatPage({
   ]);
 
   useEffect(() => {
+    if (
+      promptQueue.length === 0 ||
+      isDispatchingRef.current ||
+      controllerStatus.isBusy ||
+      controllerStatus.isDisabled ||
+      Boolean(pendingUserMessage) ||
+      isLoadingChat ||
+      !controllerReady
+    ) {
+      return;
+    }
+
+    const controller = controllerRef.current;
+    if (!controller) {
+      return;
+    }
+
+    const nextPrompt = promptQueue[0];
+    if (!nextPrompt) {
+      return;
+    }
+
+    setPromptQueue((prev) => prev.slice(1));
+    isDispatchingRef.current = true;
+
+    void (async () => {
+      try {
+        await controller.sendMessage(nextPrompt, {
+          clearDraft: () => {},
+          restoreDraft: (failedPrompt) => {
+            setPromptQueue((prev) => [failedPrompt, ...prev]);
+          },
+        });
+      } finally {
+        isDispatchingRef.current = false;
+      }
+    })();
+  }, [
+    controllerReady,
+    controllerStatus.isBusy,
+    controllerStatus.isDisabled,
+    isLoadingChat,
+    pendingUserMessage,
+    promptQueue,
+  ]);
+
+  useEffect(() => {
     setDismissedError(null);
   }, [clientError]);
 
@@ -318,9 +370,34 @@ export function SessionChatPage({
     [],
   );
 
+  const handleRemoveQueueItem = useCallback((index: number) => {
+    setPromptQueue((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleClearQueue = useCallback(() => {
+    setPromptQueue([]);
+  }, []);
+
   const handleComposerSubmit = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+
     if (isLoadingChat) {
       setClientError("Chat history is still loading.");
+      return;
+    }
+
+    // If eve is busy responding, dispatching, or has queued prompts, queue this prompt (FIFO)
+    if (
+      controllerStatus.isBusy ||
+      Boolean(pendingUserMessage) ||
+      isDispatchingRef.current ||
+      promptQueue.length > 0
+    ) {
+      setPromptQueue((prev) => [...prev, trimmed]);
+      setDraft("");
       return;
     }
 
@@ -331,11 +408,11 @@ export function SessionChatPage({
       return;
     }
 
-    await controller.sendMessage(text, {
+    await controller.sendMessage(trimmed, {
       clearDraft: () => setDraft(""),
       restoreDraft: setDraft,
     });
-  }, [isLoadingChat]);
+  }, [controllerStatus.isBusy, isLoadingChat, pendingUserMessage, promptQueue.length]);
 
   const handleComposerStop = useCallback(() => {
     controllerRef.current?.stop();
@@ -366,13 +443,11 @@ export function SessionChatPage({
   const composerDisabled =
     !setupStatus.appReady ||
     isLoadingChat ||
-    Boolean(pendingUserMessage) ||
     controllerStatus.isDisabled;
   const sessionInstanceKey = activeChat ? `${chatId}:loaded` : `${chatId}:loading`;
   const composerDisabledReason = getSessionComposerDisabledReason({
     controllerStatus,
     isLoadingChat,
-    pendingUserMessage,
     setupStatus,
   });
 
@@ -397,6 +472,11 @@ export function SessionChatPage({
 
       <div className="shrink-0 pb-4 sm:pb-6">
         <div className="mx-auto w-full max-w-2xl px-4 sm:px-6">
+          <PromptQueueBadge
+            onClearAll={handleClearQueue}
+            onRemove={handleRemoveQueueItem}
+            queue={promptQueue}
+          />
           <ChatComposer
             disabled={composerDisabled}
             disabledReason={composerDisabledReason}
@@ -432,12 +512,10 @@ function getRestorablePendingUserMessage(
 function getSessionComposerDisabledReason({
   controllerStatus,
   isLoadingChat,
-  pendingUserMessage,
   setupStatus,
 }: {
   readonly controllerStatus: AgentChatControllerStatus;
   readonly isLoadingChat: boolean;
-  readonly pendingUserMessage: string | null;
   readonly setupStatus: SetupStatus;
 }) {
   if (!setupStatus.databaseConfigured) {
@@ -450,10 +528,6 @@ function getSessionComposerDisabledReason({
 
   if (controllerStatus.disabledReason) {
     return controllerStatus.disabledReason;
-  }
-
-  if (pendingUserMessage) {
-    return "Sending message.";
   }
 
   if (isLoadingChat) {
@@ -474,10 +548,6 @@ function getSessionComposerDisabledReason({
 
   if (controllerStatus.isDisabled) {
     return "Chat is unavailable.";
-  }
-
-  if (controllerStatus.isBusy) {
-    return "eve is responding.";
   }
 
   return undefined;

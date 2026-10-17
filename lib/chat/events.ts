@@ -6,6 +6,7 @@ export function isChatTurnSettledEvent(event: HandleMessageStreamEvent) {
     event.type === "session.completed" ||
     event.type === "session.failed" ||
     event.type === "session.waiting" ||
+    event.type === "turn.completed" ||
     event.type === "turn.failed"
   );
 }

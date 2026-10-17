@@ -40,7 +40,14 @@ export async function recordModelFallbackNotice(sessionId: string, provider: AiP
     return;
   }
 
-  await client.set(noticeKey(sessionId), provider, { ex: NOTICE_TTL_SECONDS });
+  try {
+    await client.set(noticeKey(sessionId), provider, { ex: NOTICE_TTL_SECONDS });
+  } catch (error) {
+    console.warn(
+      "[ModelFallbackNotice] Redis unavailable:",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 export async function consumeModelFallbackNotice(sessionId: string): Promise<AiProvider | null> {
@@ -50,11 +57,19 @@ export async function consumeModelFallbackNotice(sessionId: string): Promise<AiP
     return null;
   }
 
-  const provider = await client.get<AiProvider>(noticeKey(sessionId));
+  try {
+    const provider = await client.get<AiProvider>(noticeKey(sessionId));
 
-  if (provider) {
-    await client.del(noticeKey(sessionId));
+    if (provider) {
+      await client.del(noticeKey(sessionId));
+    }
+
+    return provider ?? null;
+  } catch (error) {
+    console.warn(
+      "[ModelFallbackNotice] Redis unavailable:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
   }
-
-  return provider ?? null;
 }

@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { recordChatSandboxContainer } from "@/lib/db/queries";
 import { mxcExecCommand } from "@/lib/mxc/client";
 
 export default defineTool({
@@ -27,17 +28,27 @@ export default defineTool({
         "If true, takes an ephemeral checkpoint before executing and automatically rolls back if the command fails."
       ),
   }),
-  async execute({ command, sandbox_id, disposable }) {
+  async execute({ command, sandbox_id, disposable }, ctx) {
     const result = await mxcExecCommand(command, {
       sandboxId: sandbox_id,
       disposable,
     });
+
+    if (result.sandboxId) {
+      void recordChatSandboxContainer({
+        containerName: result.sandboxId,
+        sessionId: ctx.session.id,
+      }).catch((error) => {
+        console.warn("Failed to record MXC sandbox container name", error);
+      });
+    }
 
     return {
       sandboxId: result.sandboxId,
       exitCode: result.exitCode,
       stdout: result.stdout,
       stderr: result.stderr,
+      sandbox: { containerName: result.sandboxId },
     };
   },
 });

@@ -159,3 +159,63 @@ export type ChatEvent = typeof chatEvent.$inferSelect;
 export type User = typeof user.$inferSelect;
 export type UserModelPreference = typeof userModelPreference.$inferSelect;
 export type UserProviderCredential = typeof userProviderCredential.$inferSelect;
+
+export const hrEmployee = pgTable("hr_employee", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  title: text("title").notNull(),
+  department: text("department").notNull(),
+  jobLevel: text("job_level").notNull(),
+  location: text("location").notNull(),
+  annualSalary: integer("annual_salary").notNull(),
+  currency: text("currency").notNull().default("EUR"),
+  standardWeeklyHours: integer("standard_weekly_hours").notNull().default(40),
+  pensionContributionPct: integer("pension_contribution_pct").notNull().default(4),
+  healthTier: text("health_tier").notNull().default("standard"),
+  bonusTargetPct: integer("bonus_target_pct").notNull().default(10),
+  hireDate: text("hire_date").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const hrPayBand = pgTable(
+  "hr_pay_band",
+  {
+    id: text("id").primaryKey(),
+    department: text("department").notNull(),
+    jobLevel: text("job_level").notNull(),
+    title: text("title").notNull(),
+    location: text("location").notNull(),
+    minSalary: integer("min_salary").notNull(),
+    midSalary: integer("mid_salary").notNull(),
+    maxSalary: integer("max_salary").notNull(),
+    currency: text("currency").notNull().default("EUR"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("idx_pay_band_dept_level").on(table.department, table.jobLevel),
+  ],
+);
+
+export const hrBenefitPlan = pgTable("hr_benefit_plan", {
+  id: text("id").primaryKey(),
+  location: text("location").notNull(),
+  currency: text("currency").notNull().default("EUR"),
+  tier1EmployeeCapPct: integer("tier1_employee_cap_pct").notNull().default(4),
+  tier1EmployerMatchRatePct: integer("tier1_employer_match_rate_pct").notNull().default(100),
+  tier2EmployeeCapPct: integer("tier2_employee_cap_pct").notNull().default(6),
+  tier2EmployerMatchRatePct: integer("tier2_employer_match_rate_pct").notNull().default(50),
+  maxEmployerPensionMatchPct: integer("max_employer_pension_match_pct").notNull().default(5),
+  standardHealthAnnualValue: integer("standard_health_annual_value").notNull().default(3600),
+  premiumHealthAnnualValue: integer("premium_health_annual_value").notNull().default(6000),
+  wellnessAnnualStipend: integer("wellness_annual_stipend").notNull().default(1200),
+  employerOnCostPct: integer("employer_on_cost_pct").notNull().default(21),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export type HrEmployee = typeof hrEmployee.$inferSelect;
+export type HrPayBand = typeof hrPayBand.$inferSelect;
+export type HrBenefitPlan = typeof hrBenefitPlan.$inferSelect;

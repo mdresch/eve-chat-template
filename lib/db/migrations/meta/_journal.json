@@ -29,6 +29,13 @@
       "when": 1785076451147,
       "tag": "0003_nasty_rogue",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789669956236,
+      "tag": "0004_nosy_hobgoblin",
+      "breakpoints": true
     }
   ]
 }

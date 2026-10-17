@@ -25,6 +25,7 @@ export function ChatComposer({
   isPreparing = false,
   maxLength = MAX_CHAT_MESSAGE_CHARS,
   onChange,
+  onStop,
   onSubmit,
   placeholder = "Ask eve anything...",
   value,
@@ -38,16 +39,17 @@ export function ChatComposer({
   readonly isPreparing?: boolean;
   readonly maxLength?: number;
   readonly onChange: (value: string) => void;
-  readonly onStop: () => void;
+  readonly onStop?: () => void;
   readonly onSubmit: (value: string) => void | Promise<void>;
   readonly placeholder?: string;
   readonly value: string;
 }) {
   const composerId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const textareaDisabled = disabled || isBusy || isPreparing;
+  const textareaDisabled = disabled || isPreparing;
   const trimmedValue = value.trim();
   const isOverMaxLength = getChatMessageLength(trimmedValue) > maxLength;
+  const effectivePlaceholder = isBusy ? "Queue a prompt while eve is replying..." : placeholder;
 
   useEffect(() => {
     if (!autoFocus || textareaDisabled) {
@@ -63,12 +65,12 @@ export function ChatComposer({
 
   const submitValue = useCallback(() => {
     const text = value.trim();
-    if (!text || disabled || isBusy || isPreparing || getChatMessageLength(text) > maxLength) {
+    if (!text || disabled || isPreparing || getChatMessageLength(text) > maxLength) {
       return;
     }
 
     void onSubmit(text);
-  }, [disabled, isBusy, isPreparing, maxLength, onSubmit, value]);
+  }, [disabled, isPreparing, maxLength, onSubmit, value]);
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -109,7 +111,7 @@ export function ChatComposer({
         maxLength={maxLength}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={placeholder}
+        placeholder={effectivePlaceholder}
         ref={textareaRef}
         rows={2}
         value={value}
@@ -119,17 +121,7 @@ export function ChatComposer({
           {footerStart ?? <span className="block h-8" />}
         </div>
         <div className="flex shrink-0 items-center">
-          {isBusy ? (
-            <Button
-              aria-label="Response in progress"
-              className="size-6 cursor-default rounded-md bg-foreground/15 text-foreground/55 shadow-none hover:bg-foreground/15 disabled:cursor-default disabled:pointer-events-auto disabled:opacity-100"
-              disabled
-              size="icon-xs"
-              type="button"
-            >
-              <SquareIcon className="size-2.5 fill-current" />
-            </Button>
-          ) : isPreparing ? (
+          {isPreparing ? (
             <Button
               aria-label="Preparing chat"
               className="size-6 rounded-md bg-foreground/75 text-background"
@@ -139,6 +131,38 @@ export function ChatComposer({
             >
               <Loader2Icon className="size-3 animate-spin" />
             </Button>
+          ) : isBusy ? (
+            trimmedValue.length > 0 ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="Queue message (sends when eve finishes)"
+                    className="size-6 cursor-pointer rounded-md bg-foreground text-background hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-30"
+                    disabled={disabled || isOverMaxLength}
+                    size="icon-xs"
+                    type="submit"
+                  >
+                    <ArrowUpIcon className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Queue message (sends when eve finishes)</TooltipContent>
+              </Tooltip>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="Stop response"
+                    className="size-6 cursor-pointer rounded-md bg-foreground/15 text-foreground/80 shadow-none hover:bg-destructive hover:text-destructive-foreground transition-colors"
+                    onClick={onStop}
+                    size="icon-xs"
+                    type="button"
+                  >
+                    <SquareIcon className="size-2.5 fill-current" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Stop response</TooltipContent>
+              </Tooltip>
+            )
           ) : (
             <Button
               aria-label="Send message"
@@ -155,7 +179,7 @@ export function ChatComposer({
     </form>
   );
 
-  if (!disabledReason || (!disabled && !isBusy && !isPreparing)) {
+  if (!disabledReason || (!disabled && !isPreparing)) {
     return form;
   }
 

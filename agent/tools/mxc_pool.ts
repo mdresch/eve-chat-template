@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { recordChatSandboxContainer } from "@/lib/db/queries";
 import { mxcPoolLease, mxcPoolRelease, mxcPoolStatus } from "@/lib/mxc/client";
 
 export default defineTool({
@@ -21,7 +22,7 @@ export default defineTool({
       .optional()
       .describe("Lease holder identifier tag (optional when action is 'lease')."),
   }),
-  async execute({ action, sandbox_id, holder }) {
+  async execute({ action, sandbox_id, holder }, ctx) {
     if (action === "status") {
       const status = await mxcPoolStatus();
       return {
@@ -41,10 +42,17 @@ export default defineTool({
 
     if (action === "lease") {
       const leasedId = await mxcPoolLease(holder || "eve-user");
+      void recordChatSandboxContainer({
+        containerName: leasedId,
+        sessionId: ctx.session.id,
+      }).catch((error) => {
+        console.warn("Failed to record leased MXC sandbox container name", error);
+      });
       return {
         action: "lease",
         leasedSandboxId: leasedId,
         message: `Successfully leased warm standby sandbox ${leasedId} in <300ms.`,
+        sandbox: { containerName: leasedId },
       };
     }
 

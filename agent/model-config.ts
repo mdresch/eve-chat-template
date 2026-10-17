@@ -7,7 +7,11 @@ import Sentry from "@sentry/nextjs";
 import type { LanguageModel } from "ai";
 import { defineDynamic } from "eve";
 import { decryptSecret } from "@/lib/crypto/secret-box";
-import { getUserModelPreference, getUserProviderCredential } from "@/lib/db/queries";
+import {
+  getDefaultDevUserPreference,
+  getUserModelPreference,
+  getUserProviderCredential,
+} from "@/lib/db/queries";
 import type { UserProviderCredential } from "@/lib/db/schema";
 import { recordModelFallbackNotice } from "@/lib/model-fallback-notice";
 
@@ -65,20 +69,40 @@ export function definePerUserModel(fallback: LanguageModel) {
       "step.started": async (_event, ctx) => {
         const userId = ctx.session.auth.current?.principalId;
 
-        if (!userId) {
-          return null;
-        }
+        let activeProvider =
+          userId && userId !== "local-dev" && userId !== "anonymous"
+            ? await getUserModelPreference(userId)
+            : null;
 
-        Sentry.setUser({ id: userId });
-        Sentry.setConversationId(ctx.session.id);
-
-        const activeProvider = await getUserModelPreference(userId);
+        let targetUserId = userId;
 
         if (!activeProvider) {
+          const devPref = await getDefaultDevUserPreference();
+          if (devPref) {
+            activeProvider = devPref.activeProvider;
+            targetUserId = devPref.userId;
+          }
+        }
+
+        if (!targetUserId || !activeProvider) {
           return null;
         }
 
-        const credential = await getUserProviderCredential(userId, activeProvider);
+        try {
+          Sentry.setUser({ id: targetUserId });
+          Sentry.setConversationId(ctx.session.id);
+        } catch {
+          // ignore Sentry context errors in worker
+        }
+
+        let credential = await getUserProviderCredential(targetUserId, activeProvider);
+
+        if (!credential && activeProvider !== "google") {
+          credential = await getUserProviderCredential(targetUserId, "google");
+          if (credential) {
+            activeProvider = "google";
+          }
+        }
 
         if (!credential) {
           return null;
@@ -87,18 +111,22 @@ export function definePerUserModel(fallback: LanguageModel) {
         try {
           return buildModelFromCredential(credential);
         } catch (error) {
-          Sentry.logger.warn(
-            Sentry.logger.fmt`Falling back to the default model: ${activeProvider} was unusable`,
-            {
-              activeProvider,
-              error: error instanceof Error ? error.message : String(error),
-              sessionId: ctx.session.id,
-              userId,
-            },
-          );
-          Sentry.metrics.count("model_fallback", 1, {
-            attributes: { provider: activeProvider },
-          });
+          try {
+            Sentry.logger.warn(
+              Sentry.logger.fmt`Falling back to the default model: ${activeProvider} was unusable`,
+              {
+                activeProvider,
+                error: error instanceof Error ? error.message : String(error),
+                sessionId: ctx.session.id,
+                userId: targetUserId,
+              },
+            );
+            Sentry.metrics.count("model_fallback", 1, {
+              attributes: { provider: activeProvider },
+            });
+          } catch {
+            // ignore
+          }
           await recordModelFallbackNotice(ctx.session.id, activeProvider);
           return null;
         }

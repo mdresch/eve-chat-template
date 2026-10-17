@@ -1,12 +1,12 @@
 import type { EveDynamicToolPart, EveMessage, EveMessagePart } from "eve/react";
 
-const SANDBOX_TOOL_NAME = "bash";
+const SANDBOX_TOOL_NAMES = new Set(["bash", "mxc_exec", "mxc_pool", "mxc_screenshot", "mxc_network"]);
 
-// agent/tools/bash.ts wraps eve's framework-default bash tool to also return
-// its sandbox container name on every call. Scanning backwards for the most
-// recent one is enough to know which Docker container the current chat's
-// workspace lives in — no extra persistence needed, since it rides along on
-// the event log the app already stores per chat.
+// agent/tools/bash.ts and agent/tools/mxc_*.ts return the sandbox container/VM
+// name on every call. Scanning backwards for the most recent one is enough to
+// know which Docker container or Hyper-V sandbox the current chat's workspace
+// lives in — no extra persistence needed, since it rides along on the event
+// log the app already stores per chat.
 export function findLatestSandboxContainerName(
   messages: readonly EveMessage[],
 ): string | null {
@@ -25,6 +25,34 @@ export function findLatestSandboxContainerName(
   return null;
 }
 
+export function findSandboxContainerNameFromEvents(
+  events: readonly { type?: string; data?: unknown }[],
+): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event?.type === "action.result") {
+      const data = event.data as
+        | {
+            output?: {
+              sandbox?: { containerName?: unknown };
+              sandboxId?: unknown;
+              leasedSandboxId?: unknown;
+            };
+          }
+        | undefined;
+      const containerName =
+        data?.output?.sandbox?.containerName ??
+        data?.output?.sandboxId ??
+        data?.output?.leasedSandboxId;
+      if (typeof containerName === "string" && containerName.length > 0) {
+        return containerName;
+      }
+    }
+  }
+
+  return null;
+}
+
 function readContainerName(part: EveMessagePart | undefined) {
   if (!part || part.type !== "dynamic-tool" || part.state !== "output-available") {
     return null;
@@ -34,8 +62,15 @@ function readContainerName(part: EveMessagePart | undefined) {
     return null;
   }
 
-  const output = part.output as { sandbox?: { containerName?: unknown } } | undefined;
-  const containerName = output?.sandbox?.containerName;
+  const output = part.output as
+    | {
+        sandbox?: { containerName?: unknown };
+        sandboxId?: unknown;
+        leasedSandboxId?: unknown;
+      }
+    | undefined;
+  const containerName =
+    output?.sandbox?.containerName ?? output?.sandboxId ?? output?.leasedSandboxId;
 
   return typeof containerName === "string" && containerName.length > 0 ? containerName : null;
 }
@@ -43,5 +78,5 @@ function readContainerName(part: EveMessagePart | undefined) {
 function isSandboxTool(part: EveDynamicToolPart) {
   const name = part.toolMetadata?.eve?.name ?? part.toolName;
 
-  return name === SANDBOX_TOOL_NAME;
+  return SANDBOX_TOOL_NAMES.has(name);
 }

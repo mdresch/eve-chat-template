@@ -30,10 +30,14 @@ export default defineTool({
       method: "POST",
     });
 
-    Sentry.metrics.distribution("web_search_duration", Date.now() - startedAt, {
-      attributes: { status: res.status },
-      unit: "millisecond",
-    });
+    try {
+      Sentry.metrics?.distribution?.("web_search_duration", Date.now() - startedAt, {
+        attributes: { status: res.status },
+        unit: "millisecond",
+      });
+    } catch {
+      // ignore Sentry metrics errors in worker
+    }
 
     if (!res.ok) {
       throw new Error("Web search failed.");
