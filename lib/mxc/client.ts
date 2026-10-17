@@ -12,6 +12,10 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
+// ===========================================================================
+// Configuration & Path Resolution
+// ===========================================================================
+
 export function getMxcRepoRoot(): string {
   if (process.env.MXC_REPO_ROOT && existsSync(process.env.MXC_REPO_ROOT)) {
     return process.env.MXC_REPO_ROOT;
@@ -45,7 +49,6 @@ export function getExecTemplatePath(): string {
   if (existsSync(templatePath)) {
     return templatePath;
   }
-  // Create a fallback template in tmp if missing
   const fallback = join(tmpdir(), "mxc-exec-template.json");
   if (!existsSync(fallback)) {
     writeFileSync(
@@ -63,12 +66,97 @@ export function getExecTemplatePath(): string {
   return fallback;
 }
 
+// ===========================================================================
+// Tri-Mode Dispatcher Layer
+// ===========================================================================
+
+/**
+ * Execute CLI commands across all 3 modes:
+ * - Mode 1: FastMCP HTTP/SSE (if MXC_MCP_URL is defined)
+ * - Mode 2: Remote execution over SSH (if MXC_REMOTE_HOST is defined)
+ * - Mode 3: Local execution on Hyper-V host
+ */
+export async function runMxcCli(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  // Mode 2: Remote execution over SSH / Tailscale
+  const remoteHost = process.env.MXC_REMOTE_HOST;
+  if (remoteHost) {
+    const remoteExe =
+      process.env.MXC_REMOTE_EXEC_PATH ||
+      "C:\\Users\\MennoDrescher\\source\\repos\\mxc\\src\\target\\debug\\wxc-exec.exe";
+    const quotedArgs = args
+      .map((a) => (a.includes(" ") ? `"${a.replace(/"/g, '`"')}"` : a))
+      .join(" ");
+    const remoteCmd = `& "${remoteExe}" ${quotedArgs}`;
+
+    return await execFileAsync("ssh", [remoteHost, remoteCmd]);
+  }
+
+  // Mode 3: Direct local execution
+  const exe = getMxcExecPath();
+  return await execFileAsync(exe, args);
+}
+
+/**
+ * Runs a PowerShell command against the host (local or remote SSH).
+ */
+export async function runHostPowershell(psScript: string): Promise<{ stdout: string; stderr: string }> {
+  const remoteHost = process.env.MXC_REMOTE_HOST;
+
+  if (remoteHost) {
+    const escaped = psScript.replace(/"/g, '\\"').replace(/\$/g, "`$");
+    const sshCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${escaped}"`;
+    return await execFileAsync("ssh", [remoteHost, sshCmd]);
+  }
+
+  return await execFileAsync("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    psScript,
+  ]);
+}
+
+/**
+ * Mode 1: Optional FastMCP HTTP/SSE caller if MXC_MCP_URL is configured.
+ */
+async function callMxcMcp(toolName: string, args: Record<string, unknown>): Promise<any> {
+  const mcpUrl = process.env.MXC_MCP_URL;
+  if (!mcpUrl) {
+    return null;
+  }
+
+  const endpoint = `${mcpUrl.replace(/\/sse\/?$/, "").replace(/\/+$/, "")}/call`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: toolName, arguments: args }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`MXC FastMCP call failed (${res.status}): ${errText}`);
+  }
+
+  const json = await res.json();
+  return json.content?.[0]?.text ? JSON.parse(json.content[0].text) : json;
+}
+
+// ===========================================================================
+// MXC Operations (Tri-Mode Enabled)
+// ===========================================================================
+
 /**
  * Retrieve the current live status report of the MXC warm standby pool.
  */
 export async function mxcPoolStatus(): Promise<MxcPoolStatus> {
-  const exe = getMxcExecPath();
-  const { stdout } = await execFileAsync(exe, [
+  if (process.env.MXC_MCP_URL) {
+    const mcpRes = await callMxcMcp("pool_status", {});
+    if (mcpRes) return mcpRes as MxcPoolStatus;
+  }
+
+  const { stdout } = await runMxcCli([
     "--experimental",
     "--hyperv-op",
     "pool-status",
@@ -85,8 +173,12 @@ export async function mxcPoolStatus(): Promise<MxcPoolStatus> {
  * Instantly lease a pre-warmed Windows Server 2025 sandbox from the standby pool in <300ms.
  */
 export async function mxcPoolLease(holder = "eve-agent"): Promise<string> {
-  const exe = getMxcExecPath();
-  const { stdout } = await execFileAsync(exe, [
+  if (process.env.MXC_MCP_URL) {
+    const mcpRes = await callMxcMcp("pool_lease", { lease_holder: holder });
+    if (mcpRes?.sandbox_id) return mcpRes.sandbox_id;
+  }
+
+  const { stdout } = await runMxcCli([
     "--experimental",
     "--hyperv-op",
     "pool-lease",
@@ -106,8 +198,12 @@ export async function mxcPoolLease(holder = "eve-agent"): Promise<string> {
  * Automatically restores the VM to clean baseline snapshot, suspends it, and marks it Ready.
  */
 export async function mxcPoolRelease(sandboxId: string): Promise<boolean> {
-  const exe = getMxcExecPath();
-  const { stdout } = await execFileAsync(exe, [
+  if (process.env.MXC_MCP_URL) {
+    const mcpRes = await callMxcMcp("pool_release", { sandbox_id: sandboxId });
+    if (mcpRes) return true;
+  }
+
+  const { stdout } = await runMxcCli([
     "--experimental",
     "--hyperv-op",
     "pool-release",
@@ -129,10 +225,6 @@ export async function mxcExecCommand(
   command: string,
   options: MxcExecOptions = {}
 ): Promise<MxcExecResult> {
-  const exe = getMxcExecPath();
-  const template = getExecTemplatePath();
-
-  // If no sandboxId is passed, lease a pre-warmed one or pick the first ready member
   let targetSandboxId = options.sandboxId;
   let autoLeased = false;
 
@@ -141,16 +233,41 @@ export async function mxcExecCommand(
     autoLeased = true;
   }
 
-  const checkpointName = options.disposable
-    ? `eve-disp-${Date.now()}`
-    : null;
+  if (process.env.MXC_MCP_URL) {
+    try {
+      const mcpRes = await callMxcMcp("execute_command", {
+        command,
+        sandbox_id: targetSandboxId,
+        disposable: options.disposable ?? false,
+        working_directory: options.workingDirectory,
+      });
+
+      return {
+        exitCode: mcpRes.exit_code ?? 0,
+        stdout: mcpRes.stdout ?? "",
+        stderr: mcpRes.stderr ?? "",
+        sandboxId: targetSandboxId,
+      };
+    } finally {
+      if (autoLeased && targetSandboxId) {
+        await mxcPoolRelease(targetSandboxId).catch(() => {});
+      }
+    }
+  }
+
+  const template =
+    process.env.MXC_REMOTE_REPO_ROOT
+      ? `${process.env.MXC_REMOTE_REPO_ROOT}\\exec.json`
+      : getExecTemplatePath();
+
+  const checkpointName = options.disposable ? `eve-disp-${Date.now()}` : null;
 
   try {
     if (checkpointName) {
       await mxcCreateCheckpoint(targetSandboxId, checkpointName);
     }
 
-    const { stdout, stderr } = await execFileAsync(exe, [
+    const { stdout, stderr } = await runMxcCli([
       "--experimental",
       "--operation",
       "exec",
@@ -200,43 +317,57 @@ export async function mxcCaptureScreenshot(
   sandboxId?: string,
   destPath?: string
 ): Promise<MxcScreenshotResult> {
-  const repo = getMxcRepoRoot();
-  const scriptPath = join(repo, "scripts", "hyperv", "capture_screenshot.ps1");
-
-  // Determine VM Name from sandboxId (e.g. hv:a7df7452 -> mxc-hv-a7df7452)
-  let vmName = "mxc-hv-a7df7452"; // default active VM
-  if (sandboxId && sandboxId.startsWith("hv:")) {
-    const token = sandboxId.replace(/^hv:/, "");
-    vmName = `mxc-hv-${token}`;
+  if (process.env.MXC_MCP_URL) {
+    const mcpRes = await callMxcMcp("capture_screenshot", { sandbox_id: sandboxId || "auto" });
+    if (mcpRes?.data_url) {
+      return {
+        sandboxId: mcpRes.sandbox_id || sandboxId || "mxc-hv",
+        imagePath: mcpRes.file_path || "",
+        dataUrl: mcpRes.data_url,
+        width: mcpRes.width || 1024,
+        height: mcpRes.height || 768,
+      };
+    }
   }
 
-  const outPath = destPath || join(tmpdir(), `mxc-screen-${Date.now()}.png`);
+  const repo = process.env.MXC_REMOTE_REPO_ROOT || getMxcRepoRoot();
+  const scriptPath = `${repo}\\scripts\\hyperv\\capture_screenshot.ps1`;
 
+  let vmName = "mxc-hv-a7df7452";
+  if (sandboxId && sandboxId.startsWith("hv:")) {
+    vmName = `mxc-hv-${sandboxId.replace(/^hv:/, "")}`;
+  }
+
+  const localOutPath = destPath || join(tmpdir(), `mxc-screen-${Date.now()}.png`);
+  const remoteOutPath = `C:\\Windows\\Temp\\mxc-screen-${Date.now()}.png`;
+
+  // Script captures the image and emits base64 directly to stdout
   const psScript = `
-    & "${scriptPath}" -VmName '${vmName}' -OutputPath '${outPath}'
+    $out = '${process.env.MXC_REMOTE_HOST ? remoteOutPath : localOutPath}';
+    & "${scriptPath}" -VmName '${vmName}' -OutputPath $out | Out-Null;
+    if (Test-Path $out) {
+        [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($out))
+    } else {
+        throw "Failed to capture screenshot at $out"
+    }
   `;
 
-  await execFileAsync("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    psScript,
-  ]);
+  const { stdout } = await runHostPowershell(psScript);
+  const base64 = stdout.trim();
 
-  if (!existsSync(outPath)) {
-    throw new Error(`Screenshot file was not generated at ${outPath}`);
+  if (!base64) {
+    throw new Error("No screenshot data received from Hyper-V host.");
   }
 
-  const buffer = readFileSync(outPath);
-  const base64 = buffer.toString("base64");
-  const dataUrl = `data:image/png;base64,${base64}`;
+  // If local, ensure file exists on disk
+  if (!process.env.MXC_REMOTE_HOST && !existsSync(localOutPath)) {
+    writeFileSync(localOutPath, Buffer.from(base64, "base64"));
+  }
 
   return {
     sandboxId: sandboxId || vmName,
-    imagePath: outPath,
-    dataUrl,
+    imagePath: localOutPath,
+    dataUrl: `data:image/png;base64,${base64}`,
     width: 1024,
     height: 768,
   };
@@ -249,8 +380,7 @@ export async function mxcCreateCheckpoint(
   sandboxId: string,
   checkpointName: string
 ): Promise<void> {
-  const exe = getMxcExecPath();
-  await execFileAsync(exe, [
+  await runMxcCli([
     "--experimental",
     "--hyperv-op",
     "checkpoint",
@@ -268,8 +398,7 @@ export async function mxcRestoreCheckpoint(
   sandboxId: string,
   checkpointName: string
 ): Promise<void> {
-  const exe = getMxcExecPath();
-  await execFileAsync(exe, [
+  await runMxcCli([
     "--experimental",
     "--hyperv-op",
     "restore",
@@ -296,14 +425,6 @@ export async function mxcSetNetwork(
     ? `Connect-VMNetworkAdapter -VMName '${vmName}' -SwitchName 'Default Switch' | Out-Null; 'connected'`
     : `Get-VMNetworkAdapter -VMName '${vmName}' | Disconnect-VMNetworkAdapter | Out-Null; 'disconnected'`;
 
-  await execFileAsync("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    psScript,
-  ]);
-
+  await runHostPowershell(psScript);
   return { sandboxId, connected: enabled };
 }
