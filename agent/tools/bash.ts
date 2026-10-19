@@ -3,6 +3,8 @@ import { bash } from "eve/tools/defaults";
 import { recordChatSandboxContainer } from "@/lib/db/queries";
 import { mxcExecCommand, resolveMxcConfig } from "@/lib/mxc/client";
 
+let hypervSuspendedUntil = 0;
+
 // Wraps eve's framework-default `bash` tool (already auto-available once
 // agent/sandbox.ts exists) to respect the user's active sandbox runtime
 // preference on /settings ("docker", "vercel-sandbox", "mxc", "hyperv") and
@@ -18,6 +20,7 @@ export default defineTool({
 
     if (
       commandText &&
+      Date.now() > hypervSuspendedUntil &&
       (sandboxPref.activeSandbox === "hyperv" || sandboxPref.activeSandbox === "mxc")
     ) {
       try {
@@ -40,8 +43,9 @@ export default defineTool({
             mxcRes.stderr.includes("not in running state") ||
             mxcRes.stderr.includes("backend_error"))
         ) {
+          hypervSuspendedUntil = Date.now() + 60_000;
           console.warn(
-            "MXC / Hyper-V guest remoting is broken or suspended, falling back to local Docker sandbox:",
+            "MXC / Hyper-V guest remoting is broken or suspended, falling back to local Docker sandbox (cached for 60s):",
             mxcRes.stderr,
           );
         } else {
@@ -53,8 +57,9 @@ export default defineTool({
           };
         }
       } catch (error) {
+        hypervSuspendedUntil = Date.now() + 60_000;
         console.warn(
-          "MXC / Hyper-V command execution failed, falling back to local Docker sandbox:",
+          "MXC / Hyper-V command execution failed, falling back to local Docker sandbox (cached for 60s):",
           error,
         );
       }
