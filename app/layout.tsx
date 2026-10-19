@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
 import type { ReactNode } from "react";
 import { Analytics } from "@vercel/analytics/next";
@@ -91,7 +92,7 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
       suppressHydrationWarning
     >
       <head suppressHydrationWarning>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} id="theme-init" />
+        <Script dangerouslySetInnerHTML={{ __html: themeScript }} id="theme-init" strategy="beforeInteractive" />
         <AuthDisplayPreHydrationHead />
       </head>
       <body className={`${geistSans.className} antialiased`}>
