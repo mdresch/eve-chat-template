@@ -1,3 +1,4 @@
+import Script from "next/script";
 import type { ReactNode } from "react";
 import {
   AUTH_HINT_COOKIE_NAME,
@@ -35,9 +36,10 @@ html[${AUTH_DISPLAY_ATTRIBUTE}="logged-out"] [${AUTH_DISPLAY_ATTRIBUTE}="logged-
       <noscript>
         <style>{`[${AUTH_DISPLAY_ATTRIBUTE}="logged-in"] { display: none !important; }`}</style>
       </noscript>
-      <script
+      <Script
         dangerouslySetInnerHTML={{ __html: authDisplayScript }}
         id="eve-auth-display-init"
+        strategy="beforeInteractive"
       />
     </>
   );
