@@ -21,38 +21,6 @@ export type TaskStep = {
 
 function formatToolTitle(toolName: string, input?: Record<string, unknown>): { title: string; detail?: string } {
   switch (toolName) {
-    case "get_employee_rewards": {
-      const empId = typeof input?.employeeId === "string" ? input.employeeId : "";
-      return {
-        title: "Fetching employee rewards",
-        detail: empId ? `ID: ${empId}` : undefined,
-      };
-    }
-    case "query_pay_bands": {
-      const dept = typeof input?.department === "string" ? input.department : "";
-      const level = typeof input?.level === "string" ? input.level : "";
-      const detail = [dept, level].filter(Boolean).join(" • ");
-      return {
-        title: "Querying pay bands",
-        detail: detail || undefined,
-      };
-    }
-    case "simulate_pension_change": {
-      const pct = input?.additionalPercent !== undefined ? `+${input.additionalPercent}% tier` : "";
-      return {
-        title: "Simulating pension tiers",
-        detail: pct || undefined,
-      };
-    }
-    case "calculate_loaded_hourly_cost": {
-      const rate = input?.baseHourlyRate !== undefined ? `$${input.baseHourlyRate}/hr` : "";
-      const hours = input?.annualHours !== undefined ? `${input.annualHours}h/yr` : "";
-      const detail = [rate, hours].filter(Boolean).join(" • ");
-      return {
-        title: "Calculating loaded workforce cost (TCOW)",
-        detail: detail || undefined,
-      };
-    }
     case "bash": {
       const cmd = typeof input?.command === "string" ? input.command : "";
       return {
@@ -60,11 +28,31 @@ function formatToolTitle(toolName: string, input?: Record<string, unknown>): { t
         detail: cmd ? (cmd.length > 40 ? cmd.slice(0, 38) + "…" : cmd) : undefined,
       };
     }
-    case "web_search": {
-      const query = typeof input?.query === "string" ? input.query : "";
+    case "mxc_exec": {
+      const cmd = typeof input?.command === "string" ? input.command : "";
       return {
-        title: "Searching the web",
-        detail: query ? `"${query}"` : undefined,
+        title: "Executing in Hyper-V VM",
+        detail: cmd ? (cmd.length > 40 ? cmd.slice(0, 38) + "…" : cmd) : undefined,
+      };
+    }
+    case "mxc_screenshot": {
+      return {
+        title: "Capturing Hyper-V screenshot",
+        detail: "Guest desktop inspection",
+      };
+    }
+    case "mxc_pool": {
+      const action = typeof input?.action === "string" ? input.action : "";
+      return {
+        title: "Hyper-V pool management",
+        detail: action || undefined,
+      };
+    }
+    case "mxc_network": {
+      const state = input?.state ? String(input.state) : "";
+      return {
+        title: "Hyper-V network toggle",
+        detail: state || undefined,
       };
     }
     case "read_file": {
@@ -79,6 +67,34 @@ function formatToolTitle(toolName: string, input?: Record<string, unknown>): { t
       return {
         title: "Writing file",
         detail: path || undefined,
+      };
+    }
+    case "glob": {
+      const pattern = typeof input?.pattern === "string" ? input.pattern : "";
+      return {
+        title: "Searching workspace files",
+        detail: pattern || undefined,
+      };
+    }
+    case "grep": {
+      const pattern = typeof input?.pattern === "string" ? input.pattern : "";
+      return {
+        title: "Searching code (grep)",
+        detail: pattern || undefined,
+      };
+    }
+    case "web_search": {
+      const query = typeof input?.query === "string" ? input.query : "";
+      return {
+        title: "Searching the web",
+        detail: query ? `"${query}"` : undefined,
+      };
+    }
+    case "web_fetch": {
+      const url = typeof input?.url === "string" ? input.url : "";
+      return {
+        title: "Fetching URL",
+        detail: url || undefined,
       };
     }
     default: {

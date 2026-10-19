@@ -158,7 +158,7 @@ pnpm dev
 - Per-user AI provider settings (BYOK) with encrypted credentials and automatic fallback ([docs](docs/byok-model-providers.md))
 - Sandboxed code execution with a `bash` tool (Vercel Sandbox when deployed on Vercel, Docker locally/self-hosted, including VS Code container attach and idle cleanup) ([docs](docs/sandboxed-code-execution.md))
 - A `pmbok-specialist` subagent pipeline that turns an idea into PMBOK deliverables published to Notion, Linear, or Shortcut ([docs](docs/pmbok-specialist-subagent.md))
-- Local tools (`bash`, `get_weather`, `web_search`, experimental workflows) and skills ([docs](docs/agent-tools-and-skills.md))
+- Local tools (`bash`, `mxc_*` Hyper-V remoting, `web_search`, experimental workflows) and skills ([docs](docs/agent-tools-and-skills.md))
 - Sentry error monitoring, structured logs, and custom metrics ([docs](docs/observability.md))
 
 This template intentionally does not include file uploads, Vercel Blob, guest mode, NextAuth/Auth.js, or AI Elements.

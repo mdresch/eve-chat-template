@@ -17,15 +17,15 @@ filenames must be snake_case ASCII.
 
 | File | Tool name | Purpose |
 | --- | --- | --- |
-| `agent/tools/bash.ts` | `bash` | Wraps eve's default sandboxed `bash` tool to also surface the sandbox's Docker container name (Docker path only; no-op on Vercel Sandbox). See [Sandboxed Code Execution](sandboxed-code-execution.md). |
-| `agent/tools/get_weather.ts` | `get_weather` | Returns a stubbed current-weather reading for a city. Referenced by `agent/instructions.md` and the `plan_a_trip` skill. |
+| `agent/tools/bash.ts` | `bash` | Wraps eve's default sandboxed `bash` tool to route commands to Docker or Hyper-V Windows Server 2025 and record container telemetry. See [Sandboxed Code Execution](sandboxed-code-execution.md). |
+| `agent/tools/mxc_exec.ts` | `mxc_exec` | Runs commands inside Hyper-V Windows Server 2025 guest via PowerShell Direct with optional disposable rollback on failure. |
+| `agent/tools/mxc_screenshot.ts` | `mxc_screenshot` | Captures guest desktop screenshot buffer for visual inspection of UI/installers. |
+| `agent/tools/mxc_pool.ts` | `mxc_pool` | Inspects, leases, and resets Hyper-V standby sandboxes. |
+| `agent/tools/mxc_network.ts` | `mxc_network` | Toggles VM network adapter between internet-connected and airgap isolation. |
 | `agent/tools/web_search.ts` | `web_search` | Searches the web via the Exa API. Requires `EXA_API_KEY`; throws a clear error if unconfigured. Overrides eve's built-in provider-managed web search tool with this Exa-backed one. Duplicated as `tools/web_search.ts` inside each of the five [PMBOK stage subagents](pmbok-specialist-subagent.md#nested-subagents-dont-inherit-connections-or-tools), since subagents don't inherit the root's tools. |
-| `agent/tools/workflow.ts` | (framework) | Opts into eve's experimental `Workflow` tool (`experimental_workflow()`) — lets the model write JS that orchestrates parallel/sequential calls to its own subagents as one durable step. See eve's dynamic-workflows guide under `node_modules/eve/dist/docs/public/`. |
+| `agent/tools/workflow.ts` | (framework) | Opts into eve's experimental `Workflow` tool (`experimental_workflow()`) — lets the model write JS that orchestrates parallel/sequential calls to its own subagents as one durable step. |
 
-`get_weather` is intentionally a stub (`condition: "Sunny"`, fixed
-temperature) — it exists to demonstrate the tool-definition pattern and to
-give the `plan_a_trip` skill something to call, not to be a real weather
-API integration.
+eve also provides built-in tools out of the box: `read_file`, `write_file`, `glob`, `grep`, `web_fetch`, `todo`, and `ask_question`.
 
 `web_search` reports a `web_search_duration` Sentry metric on every call (see
 [Observability](observability.md)).
@@ -51,17 +51,13 @@ is always visible to the model, so it can decide when to load the rest.
 
 | File | Description (frontmatter) |
 | --- | --- |
-| `agent/skills/plan_a_trip.md` | Use when the user wants help planning a trip or deciding what to do in a destination. |
-
-`plan_a_trip.md` tells the model to: ask for destination/dates if missing,
-check the destination's weather with `get_weather` before suggesting
-activities, then propose a short (bullet-point) itinerary that fits the
-weather.
+| `agent/skills/code_review.md` | Perform a comprehensive, senior-level code review on a diff, file, or implementation. |
+| `agent/skills/sandbox_troubleshooting.md` | Systematically troubleshoot broken builds, failed tests, or sandbox/VM execution issues. |
 
 Skills are not subagents. `agent/instructions.md` calls this out explicitly
 for `pmbok-specialist`: it is a subagent tool, and `load_skill` does not
 apply to it — `load_skill` only loads this agent's own on-demand skill
-instructions, like `plan_a_trip`.
+instructions.
 
 ### Adding A New Skill
 
