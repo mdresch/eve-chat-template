@@ -173,6 +173,7 @@ async function callMxcMcp(
   toolName: string,
   args: Record<string, unknown>,
   mcpUrlOverride?: string | null,
+  timeoutMs = 15_000,
 ): Promise<FastMcpRawResult | null> {
   const cfg = mcpUrlOverride ? null : await resolveMxcConfig();
   const mcpUrl = (mcpUrlOverride ?? cfg?.mcpUrl ?? process.env.MXC_MCP_URL)?.trim();
@@ -181,29 +182,37 @@ async function callMxcMcp(
   }
 
   const endpoint = `${mcpUrl.replace(/\/sse\/?$/, "").replace(/\/+$/, "")}/call`;
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: toolName, arguments: args }),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`MXC FastMCP call failed (${res.status}): ${errText}`);
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: toolName, arguments: args }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`MXC FastMCP call failed (${res.status}): ${errText}`);
+    }
+
+    const json = (await res.json()) as Record<string, any>;
+    const rawText =
+      typeof json.content?.[0]?.text === "string"
+        ? json.content[0].text
+        : JSON.stringify(json);
+    const parsedJson = extractJsonObject(rawText);
+
+    return {
+      rawText,
+      parsedJson,
+      rawResponse: json,
+    };
+  } finally {
+    clearTimeout(timer);
   }
-
-  const json = (await res.json()) as Record<string, any>;
-  const rawText =
-    typeof json.content?.[0]?.text === "string"
-      ? json.content[0].text
-      : JSON.stringify(json);
-  const parsedJson = extractJsonObject(rawText);
-
-  return {
-    rawText,
-    parsedJson,
-    rawResponse: json,
-  };
 }
 
 function extractJsonObject(raw: string): Record<string, any> | null {
@@ -509,30 +518,59 @@ export async function mxcExecCommand(
 ): Promise<MxcExecResult> {
   const cfg = await resolveMxcConfig();
   if (cfg.mcpUrl || process.env.MXC_MCP_URL) {
-    const requestedId = await resolveDefaultSandboxId(options.sandboxId);
+    let requestedId = await resolveDefaultSandboxId(options.sandboxId);
 
-    const mcpRes = await callMxcMcp("execute_command", {
-      command,
-      sandbox_id: requestedId,
-      disposable: options.disposable ?? false,
-    });
+    let mcpRes = await callMxcMcp(
+      "execute_command",
+      {
+        command,
+        sandbox_id: requestedId,
+        disposable: options.disposable ?? false,
+      },
+      undefined,
+      25_000,
+    );
 
     if (!mcpRes) {
       throw new Error("Empty response from MXC FastMCP execute_command");
     }
 
-    // If a standby VM was selected and is currently Paused/not_started, fallback to discovered running VM
-    if (mcpRes.parsedJson?.error?.code === "not_started") {
-      const runningFallback = await resolveDefaultSandboxId(null);
-      if (runningFallback && runningFallback !== requestedId) {
-        const fallbackRes = await callMxcMcp("execute_command", {
-          command,
-          sandbox_id: runningFallback,
-          disposable: options.disposable ?? false,
-        });
-        if (fallbackRes) {
-          return parseMcpCommandOutput(fallbackRes.rawText, runningFallback);
+    const rawError = mcpRes.rawText;
+    const isBrokenRemotingOrPaused =
+      mcpRes.parsedJson?.error?.code === "not_started" ||
+      mcpRes.parsedJson?.error?.code === "backend_error" ||
+      rawError.includes("PSSessionStateBroken") ||
+      rawError.includes("not in running state") ||
+      rawError.includes("Exit Code: 4294967295");
+
+    if (isBrokenRemotingOrPaused) {
+      try {
+        const leaseRes = await callMxcMcp(
+          "session_acquire",
+          { holder: "eve-agent" },
+          undefined,
+          10_000,
+        );
+        const match = leaseRes?.rawText?.match(/'(hv:[a-zA-Z0-9_-]+)'/);
+        const nextId = match?.[1] || (await resolveDefaultSandboxId(null));
+        if (nextId) {
+          requestedId = nextId;
+          const retryRes = await callMxcMcp(
+            "execute_command",
+            {
+              command,
+              sandbox_id: requestedId,
+              disposable: options.disposable ?? false,
+            },
+            undefined,
+            25_000,
+          );
+          if (retryRes) {
+            mcpRes = retryRes;
+          }
         }
+      } catch (leaseErr) {
+        console.warn("Failed to auto-acquire fresh MXC session VM:", leaseErr);
       }
     }
 

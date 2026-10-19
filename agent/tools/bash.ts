@@ -20,25 +20,44 @@ export default defineTool({
       commandText &&
       (sandboxPref.activeSandbox === "hyperv" || sandboxPref.activeSandbox === "mxc")
     ) {
-      const mxcRes = await mxcExecCommand(commandText, {
-        sandboxId: sandboxPref.defaultSandboxId ?? undefined,
-      });
-
-      if (mxcRes.sandboxId) {
-        void recordChatSandboxContainer({
-          containerName: mxcRes.sandboxId,
-          sessionId: ctx.session.id,
-        }).catch((error) => {
-          console.warn("Failed to record MXC sandbox container name", error);
+      try {
+        const mxcRes = await mxcExecCommand(commandText, {
+          sandboxId: sandboxPref.defaultSandboxId ?? undefined,
         });
-      }
 
-      return {
-        exitCode: mxcRes.exitCode,
-        stdout: mxcRes.stdout,
-        stderr: mxcRes.stderr,
-        sandbox: { containerName: mxcRes.sandboxId },
-      };
+        if (mxcRes.sandboxId) {
+          void recordChatSandboxContainer({
+            containerName: mxcRes.sandboxId,
+            sessionId: ctx.session.id,
+          }).catch((error) => {
+            console.warn("Failed to record MXC sandbox container name", error);
+          });
+        }
+
+        if (
+          mxcRes.exitCode !== 0 &&
+          (mxcRes.stderr.includes("PSSessionStateBroken") ||
+            mxcRes.stderr.includes("not in running state") ||
+            mxcRes.stderr.includes("backend_error"))
+        ) {
+          console.warn(
+            "MXC / Hyper-V guest remoting is broken or suspended, falling back to local Docker sandbox:",
+            mxcRes.stderr,
+          );
+        } else {
+          return {
+            exitCode: mxcRes.exitCode,
+            stdout: mxcRes.stdout,
+            stderr: mxcRes.stderr,
+            sandbox: { containerName: mxcRes.sandboxId },
+          };
+        }
+      } catch (error) {
+        console.warn(
+          "MXC / Hyper-V command execution failed, falling back to local Docker sandbox:",
+          error,
+        );
+      }
     }
 
     const result = (await bash.execute(input, ctx)) as Record<string, unknown>;

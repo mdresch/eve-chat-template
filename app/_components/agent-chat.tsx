@@ -398,6 +398,10 @@ async function* streamSessionEvents({
           }
         }
       } catch (error) {
+        if (signal?.aborted) {
+          return;
+        }
+
         if (!isStreamDisconnectError(error)) {
           throw error;
         }
@@ -837,6 +841,7 @@ export function AgentChatSession({
   );
   const currentTitleRef = useRef(activeChat?.title ?? "New chat");
   const resumeStartedRef = useRef(false);
+  const resumeAbortControllerRef = useRef<AbortController | null>(null);
   const resumedEventsRef = useRef<HandleMessageStreamEvent[]>([]);
   const streamEventsRef = useRef<HandleMessageStreamEvent[]>([]);
   const streamEventKeysRef = useRef<Set<string>>(new Set());
@@ -1365,12 +1370,15 @@ export function AgentChatSession({
           message,
         });
       } catch (error) {
+        stopFinalizingTurn();
+        void clearChatPendingMessageAction(chatId);
+
         if (isAbortError(error)) {
+          clearLocalPendingUserMessage();
+          onPendingUserMessageSettled?.();
           return;
         }
 
-        stopFinalizingTurn();
-        void clearChatPendingMessageAction(chatId);
         restoreAfterFailedSend(error instanceof Error ? error.message : "Failed to send message.");
       }
     },
@@ -1602,6 +1610,7 @@ export function AgentChatSession({
     }
 
     const abortController = new AbortController();
+    resumeAbortControllerRef.current = abortController;
     const existingEvents = activeChat.events;
     const pendingMessageText = pendingUserMessage ?? null;
     const shouldResumeOpenTurn = hasOpenChatTurn(existingEvents);
@@ -1640,7 +1649,7 @@ export function AgentChatSession({
         };
 
         for await (const event of session.stream(resumeStreamOptions)) {
-          if (cancelled) {
+          if (cancelled || abortController.signal.aborted) {
             return;
           }
 
@@ -1661,7 +1670,7 @@ export function AgentChatSession({
           }
         }
 
-        if (cancelled) {
+        if (cancelled || abortController.signal.aborted) {
           return;
         }
 
@@ -1706,7 +1715,7 @@ export function AgentChatSession({
         onPendingUserMessageSettled?.();
         completed = true;
       } catch (error) {
-        if (!cancelled && !isAbortError(error)) {
+        if (!cancelled && !abortController.signal.aborted && !isAbortError(error)) {
           setResumeFailed(true);
           touchChat({
             id: activeChat.id,
@@ -1716,7 +1725,10 @@ export function AgentChatSession({
           });
         }
       } finally {
-        if (!cancelled) {
+        if (resumeAbortControllerRef.current === abortController) {
+          resumeAbortControllerRef.current = null;
+        }
+        if (!cancelled && !abortController.signal.aborted) {
           setIsResuming(false);
         }
       }
@@ -1724,6 +1736,9 @@ export function AgentChatSession({
 
     return () => {
       cancelled = true;
+      if (resumeAbortControllerRef.current === abortController) {
+        resumeAbortControllerRef.current = null;
+      }
       if (!completed) {
         resumeStartedRef.current = false;
       }
@@ -1794,12 +1809,76 @@ export function AgentChatSession({
     }
   }, [clearLocalPendingUserMessage, displayMessages, localPendingUserMessage]);
 
+  const handleStop = useCallback(() => {
+    if (resumeAbortControllerRef.current) {
+      resumeAbortControllerRef.current.abort();
+      resumeAbortControllerRef.current = null;
+    }
+
+    agent.stop();
+    stopFinalizingTurn();
+    setIsResuming(false);
+    clearLocalPendingUserMessage();
+    onPendingUserMessageSettled?.();
+
+    const chatId = activeChatIdRef.current;
+    if (!chatId) {
+      return;
+    }
+
+    void clearChatPendingMessageAction(chatId);
+
+    const token = persistedSessionRef.current?.state.continuationToken ?? "";
+    const waitingEvent = createSessionWaitingEvent(token);
+    const nextLocalEvents = mergeLocalEvents(localEventsRef.current, [waitingEvent]);
+    localEventsRef.current = nextLocalEvents;
+    setLocalEvents(nextLocalEvents);
+
+    const allEvents = mergeLocalEvents(displayEvents, [waitingEvent]);
+    const nextSession = advanceSessionWithLocalEvents(
+      persistedSessionRef.current?.state ?? createInitialSessionState(),
+      [waitingEvent],
+    );
+
+    if (persistedSessionRef.current) {
+      persistedSessionRef.current.setState(nextSession);
+    }
+
+    const nextSandboxContainerName = deriveSandboxContainerName(allEvents);
+    touchChat({
+      id: chatId,
+      sandboxContainerName: nextSandboxContainerName,
+      status: "ready",
+      title: currentTitleRef.current,
+      updatedAt: new Date().toISOString(),
+    });
+
+    onActiveChatUpdated?.({
+      events: allEvents,
+      id: chatId,
+      pendingUserMessage: null,
+      sandboxContainerName: nextSandboxContainerName,
+      session: nextSession,
+      title: currentTitleRef.current,
+    });
+
+    void postChatSnapshot(chatId, allEvents, nextSession).catch(() => {});
+  }, [
+    agent,
+    clearLocalPendingUserMessage,
+    displayEvents,
+    onActiveChatUpdated,
+    onPendingUserMessageSettled,
+    stopFinalizingTurn,
+    touchChat,
+  ]);
+
   useEffect(() => {
     onControllerChange(
       {
         reset: resetSession,
         sendMessage,
-        stop: agent.stop,
+        stop: handleStop,
       },
       {
         disabledReason,
@@ -1809,8 +1888,8 @@ export function AgentChatSession({
       },
     );
   }, [
-    agent.stop,
     disabledReason,
+    handleStop,
     isBusy,
     isFinalizingTurn,
     isEmpty,
