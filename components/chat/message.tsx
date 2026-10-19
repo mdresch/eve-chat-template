@@ -5,14 +5,16 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CheckIcon,
+  CopyIcon,
   Loader2Icon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Markdown } from "@/components/chat/markdown";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 const STREAM_TEXT_TICK_MS = 60;
@@ -41,6 +43,7 @@ export function AgentMessage({
     -1,
   );
   const isUser = message.role === "user";
+  const messageText = extractMessageText(message);
 
   return (
     <article
@@ -50,25 +53,129 @@ export function AgentMessage({
         message.metadata?.optimistic ? "opacity-90" : undefined,
       )}
     >
-      <div
-        className={cn(
-          "min-w-0",
-          isUser
-            ? "max-w-[85%] rounded-[18px] border border-border/40 bg-muted/70 px-3 py-1.5 text-[15px] leading-6 text-foreground shadow-sm"
-            : "w-full max-w-none text-sm leading-relaxed text-foreground",
-        )}
-      >
-        <AgentMessageParts
-          canRespond={canRespond}
-          isUser={isUser}
-          lastTextIndex={lastTextIndex}
-          messageId={message.id}
-          onInputResponses={onInputResponses}
-          parts={message.parts}
-          showCaret={isStreaming && message.role === "assistant"}
-        />
-      </div>
+      {isUser ? (
+        <div className="flex items-center gap-1.5 max-w-[85%]">
+          <CopyMessageButton
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+            content={messageText}
+          />
+          <div className="min-w-0 rounded-[18px] border border-border/40 bg-muted/70 px-3 py-1.5 text-[15px] leading-6 text-foreground shadow-sm">
+            <AgentMessageParts
+              canRespond={canRespond}
+              isUser={isUser}
+              lastTextIndex={lastTextIndex}
+              messageId={message.id}
+              onInputResponses={onInputResponses}
+              parts={message.parts}
+              showCaret={false}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="w-full max-w-none text-sm leading-relaxed text-foreground">
+          <AgentMessageParts
+            canRespond={canRespond}
+            isUser={isUser}
+            lastTextIndex={lastTextIndex}
+            messageId={message.id}
+            onInputResponses={onInputResponses}
+            parts={message.parts}
+            showCaret={isStreaming && message.role === "assistant"}
+          />
+          {!isStreaming && messageText ? (
+            <div className="mt-1 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+              <CopyMessageButton content={messageText} />
+            </div>
+          ) : null}
+        </div>
+      )}
     </article>
+  );
+}
+
+function extractMessageText(message: EveMessage): string {
+  const parts: string[] = [];
+
+  for (const part of message.parts) {
+    if (part.type === "text" && part.text) {
+      parts.push(part.text);
+    }
+  }
+
+  return parts.join("\n\n").trim();
+}
+
+function CopyMessageButton({
+  className,
+  content,
+}: {
+  readonly className?: string;
+  readonly content: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [copied]);
+
+  const handleCopy = useCallback(async () => {
+    if (!content) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = content;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand("copy");
+        setCopied(true);
+      } finally {
+        document.body.removeChild(textarea);
+      }
+    }
+  }, [content]);
+
+  if (!content) {
+    return null;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={copied ? "Copied" : "Copy message"}
+          className={cn(
+            "size-6 text-muted-foreground/60 hover:text-foreground hover:bg-muted/60 transition-all",
+            className,
+          )}
+          onClick={handleCopy}
+          size="icon-xs"
+          type="button"
+          variant="ghost"
+        >
+          {copied ? (
+            <CheckIcon className="size-3.5 text-emerald-500" />
+          ) : (
+            <CopyIcon className="size-3.5" />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {copied ? "Copied!" : "Copy message"}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
