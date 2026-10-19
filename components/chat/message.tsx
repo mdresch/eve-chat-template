@@ -517,6 +517,14 @@ function ToolDetails({
 function ToolStatusIcon({ status }: { readonly status: ToolStatus }) {
   const className = "size-3 shrink-0";
 
+  if (status === "waiting-for-input") {
+    return (
+      <span className="flex size-4 shrink-0 items-center justify-center self-center">
+        <span className="size-2 rounded-full bg-amber-500 animate-pulse" />
+      </span>
+    );
+  }
+
   if (status === "running") {
     return (
       <span className="flex size-4 shrink-0 items-center justify-center self-center">
@@ -670,9 +678,9 @@ function InputRequestActions({
   );
 }
 
-type ToolStatus = "completed" | "denied" | "error" | "running";
+type ToolStatus = "completed" | "denied" | "error" | "running" | "waiting-for-input";
 
-function needsInputResponse(part: EveDynamicToolPart) {
+export function needsInputResponse(part: EveDynamicToolPart) {
   return Boolean(part.toolMetadata?.eve?.inputRequest && !part.toolMetadata.eve.inputResponse);
 }
 
@@ -696,6 +704,10 @@ function isConnectionSearchTool(part: EveDynamicToolPart) {
 }
 
 function getToolStatus(part: EveDynamicToolPart): ToolStatus {
+  if (needsInputResponse(part)) {
+    return "waiting-for-input";
+  }
+
   switch (part.state) {
     case "input-streaming":
     case "input-available":
@@ -712,11 +724,18 @@ function getToolStatus(part: EveDynamicToolPart): ToolStatus {
 }
 
 function getSettledToolStatus(status: ToolStatus, isSettled: boolean): ToolStatus {
+  if (status === "waiting-for-input") {
+    return "waiting-for-input";
+  }
   return isSettled && status === "running" ? "completed" : status;
 }
 
 function getToolGroupStatus(parts: readonly EveDynamicToolPart[]): ToolStatus {
   const statuses = parts.map(getToolStatus);
+
+  if (statuses.includes("waiting-for-input")) {
+    return "waiting-for-input";
+  }
 
   if (statuses.includes("error")) {
     return "error";
@@ -743,6 +762,8 @@ function toolStatusLabel(status: ToolStatus) {
       return "Error";
     case "running":
       return "Running";
+    case "waiting-for-input":
+      return "Input needed";
   }
 }
 

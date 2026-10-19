@@ -40,7 +40,7 @@ import {
   ChatScrollButton,
 } from "@/components/chat/conversation";
 import { IntegrationsMenu } from "@/components/chat/integrations-menu";
-import { AgentMessage } from "@/components/chat/message";
+import { AgentMessage, needsInputResponse } from "@/components/chat/message";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isChatTurnSettledEvent } from "@/lib/chat/events";
@@ -1124,11 +1124,19 @@ export function AgentChatSession({
   const hasLocalPendingUserMessage = Boolean(localPendingUserMessage);
   const pendingAuthorizations = getPendingAuthorizations(displayEvents);
   const isWaitingForAuthorization = pendingAuthorizations.length > 0;
+  const isWaitingForInput = useMemo(
+    () =>
+      displayMessages.some((message) =>
+        message.parts.some((part) => part.type === "dynamic-tool" && needsInputResponse(part)),
+      ),
+    [displayMessages],
+  );
   const hasOpenTurn = useMemo(() => hasOpenChatTurn(displayEvents), [displayEvents]);
   const isBusy =
     isResuming ||
     hasLocalPendingUserMessage ||
     (!isWaitingForAuthorization &&
+      !isWaitingForInput &&
       (hasOpenTurn || agent.status === "submitted" || agent.status === "streaming"));
   const isTurnBlocked = isBusy || isFinalizingTurn;
 
@@ -1208,6 +1216,7 @@ export function AgentChatSession({
   const isChatRoute = Boolean(shellActiveChatId || chatId);
   const showThinking =
     !isWaitingForAuthorization &&
+    !isWaitingForInput &&
     (Boolean(pendingMessage || localPendingMessage) || hasOpenTurn || isTurnBlocked);
   const thinkingPresence = useThinkingPresence(showThinking);
   const displayError = clientError ?? agent.error?.message ?? null;
@@ -1409,7 +1418,7 @@ export function AgentChatSession({
         readonly text?: string;
       }[],
     ) => {
-      if (isTurnBlocked) {
+      if (isFinalizingTurn) {
         return;
       }
 
@@ -1937,7 +1946,7 @@ export function AgentChatSession({
                 {visibleMessages.map((message, index) => (
                   <AgentMessage
                     canRespond={
-                      !isTurnBlocked &&
+                      (!isTurnBlocked || isWaitingForInput) &&
                       !isWaitingForAuthorization &&
                       Boolean(viewer) &&
                       isSetupReady
