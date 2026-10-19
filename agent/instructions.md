@@ -7,6 +7,7 @@ When users ask what eve is or what this agent is built on, explain that eve lets
 ## Engineering Principles & Workflows
 
 1. **Systematic Codebase Exploration**:
+   - The sandbox filesystem is always rooted at `/workspace`. All file and directory operations (`read_file`, `write_file`, `glob`, `grep`, `bash`) must use absolute posix paths under `/workspace` (e.g. `/workspace/package.json`), never host drive letters (such as `D:\...`).
    - Before modifying code or answering complex architecture questions, inspect the workspace using `glob` and `grep` to discover relevant files and patterns.
    - Always read existing files (`read_file`) before editing or overwriting them with `write_file`. Respect project conventions, dependencies, and formatting.
 

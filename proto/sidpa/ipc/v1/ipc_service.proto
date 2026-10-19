@@ -1,0 +1,177 @@
+syntax = "proto3";
+
+package sidpa.ipc.v1;
+
+option go_package = "github.com/sidpa/proto/v1/ipc;ipcv1";
+option java_package = "org.sidpa.ipc.v1";
+option java_multiple_files = true;
+
+// IntelligenceProcurementService defines the canonical gRPC interface for
+// negotiating, executing, and settling Intelligence Procurement Contracts (IPCs).
+service IntelligenceProcurementService {
+  // ProposeContract submits a new candidate IPC specification for reservation.
+  rpc ProposeContract (ProposeContractRequest) returns (ProposeContractResponse);
+
+  // LockReservation verifies capacity and commits compute nodes to the IPC.
+  rpc LockReservation (LockReservationRequest) returns (LockReservationResponse);
+
+  // EstablishSession initiates a TEE-attested session with an ephemeral ratchet.
+  rpc EstablishSession (EstablishSessionRequest) returns (EstablishSessionResponse);
+
+  // StreamExecutionTurn processes inference turns with turn-by-turn Merkle transcript hashes.
+  rpc StreamExecutionTurn (stream ExecutionTurnRequest) returns (stream ExecutionTurnResponse);
+
+  // RefreshAttestation refreshes the hardware enclave quote during an active session.
+  rpc RefreshAttestation (RefreshAttestationRequest) returns (RefreshAttestationResponse);
+
+  // ReconcileAndSettle finalizes ledger balances across Capacity, Delivery, and Yield.
+  rpc ReconcileAndSettle (ReconcileRequest) returns (ReconcileResponse);
+}
+
+// ----------------------------------------------------------------------------
+// Contract Negotiation & Reservation
+// ----------------------------------------------------------------------------
+
+message ProposeContractRequest {
+  string contract_id = 1;
+  string consumer_account_id = 2;
+  bytes contract_json_schema = 3;
+  bytes consumer_signature = 4;
+}
+
+message ProposeContractResponse {
+  string contract_id = 1;
+  enum ProposalStatus {
+    PROPOSAL_STATUS_UNSPECIFIED = 0;
+    ACCEPTED_PENDING_RESERVATION = 1;
+    REJECTED_CAPACITY_UNAVAILABLE = 2;
+    REJECTED_INVALID_CONSTRAINTS = 3;
+  }
+  ProposalStatus status = 2;
+  string rejection_reason = 3;
+}
+
+message LockReservationRequest {
+  string contract_id = 1;
+  string provider_node_id = 2;
+  string escrow_tx_ref = 3;
+  bytes provider_signature = 4;
+}
+
+message LockReservationResponse {
+  string contract_id = 1;
+  bool is_locked = 2;
+  int64 start_epoch_ms = 3;
+  int64 end_epoch_ms = 4;
+  string clearinghouse_registration_tx = 5;
+}
+
+// ----------------------------------------------------------------------------
+// TEE Attestation & Session Ratchet
+// ----------------------------------------------------------------------------
+
+message EstablishSessionRequest {
+  string contract_id = 1;
+  string session_id = 2;
+  bytes client_ephemeral_pubkey = 3;
+  bytes client_nonce = 4;
+}
+
+message EstablishSessionResponse {
+  string contract_id = 1;
+  string session_id = 2;
+  bytes server_ephemeral_pubkey = 3;
+  bytes enclave_hardware_quote = 4; // Vendor TEE quote (Intel TDX, AMD SEV-SNP, NVIDIA CC)
+  bytes avs_verification_token = 5;  // Pre-validated compact token from Attestation Verification Service
+  int64 quote_expiration_epoch_ms = 6;
+}
+
+message RefreshAttestationRequest {
+  string contract_id = 1;
+  string session_id = 2;
+  bytes client_challenge = 3;
+}
+
+message RefreshAttestationResponse {
+  string contract_id = 1;
+  string session_id = 2;
+  bytes refreshed_hardware_quote = 3;
+  bytes avs_token = 4;
+  int64 new_expiration_epoch_ms = 5;
+}
+
+// ----------------------------------------------------------------------------
+// Streaming Execution & Turn Metrics
+// ----------------------------------------------------------------------------
+
+message ExecutionTurnRequest {
+  string contract_id = 1;
+  string session_id = 2;
+  string turn_id = 3;
+  uint64 sequence_number = 4;
+  
+  // Encrypted inference payload using session ratchet key
+  bytes encrypted_turn_payload = 5;
+  bytes previous_turn_transcript_hash = 6;
+  
+  // Task complexity metadata for Dynamic Difficulty Adjustment (DDA)
+  bool is_multi_step_agentic = 7;
+  uint32 estimated_dag_depth = 8;
+}
+
+message ExecutionTurnResponse {
+  string contract_id = 1;
+  string session_id = 2;
+  string turn_id = 3;
+  uint64 sequence_number = 4;
+  
+  // Streaming token chunk or terminal completion payload
+  bytes encrypted_token_chunk = 5;
+  bool is_turn_completed = 6;
+  
+  // Turn transcript commitment hash (appended to Merkle session tree)
+  bytes turn_transcript_hash = 7;
+  
+  // Real-time SLA telemetry
+  TelemetryMetrics turn_metrics = 8;
+}
+
+message TelemetryMetrics {
+  uint64 prompt_tokens = 1;
+  uint64 completion_tokens = 2;
+  uint64 waste_tokens = 3;
+  double ttft_ms = 4;
+  double avg_itl_ms = 5;
+  double instantaneous_cwr = 6;
+  double allowed_cwr_threshold = 7; // Reflects static (10%) or DDA-adjusted threshold
+  bool is_sla_breached = 8;
+}
+
+// ----------------------------------------------------------------------------
+// Settlement & Three-Ledger Balancing
+// ----------------------------------------------------------------------------
+
+message ReconcileRequest {
+  string contract_id = 1;
+  string settlement_epoch_id = 2;
+  bytes consumer_reconciliation_sig = 3;
+}
+
+message ReconcileResponse {
+  string contract_id = 1;
+  string settlement_tx_hash = 2;
+  
+  // Ledger 1: Capacity Reconciliation
+  double total_committed_flops = 3;
+  
+  // Ledger 2: Delivery Reconciliation
+  double gross_idu_delivered = 4;
+  double net_idu_effective = 5;
+  double aggregate_cwr = 6;
+  
+  // Ledger 3: Yield & Liquidation
+  double total_penalties_liquidated = 7;
+  double final_settled_yield_score = 8;
+  string clearinghouse_merkle_root = 9;
+}
+
