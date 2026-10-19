@@ -122,6 +122,16 @@ export function deriveTaskSteps(events: readonly HandleMessageStreamEvent[]): Ta
   let hasReasoning = false;
   let hasActions = false;
   let hasTextAppended = false;
+  const isTurnSettled = turnEvents.some(
+    (e) =>
+      e.type === "turn.completed" ||
+      e.type === "session.waiting" ||
+      e.type === "session.completed" ||
+      e.type === "turn.failed" ||
+      e.type === "session.failed" ||
+      e.type === "input.requested",
+  );
+
   const toolResults = new Map<string, { status: "completed" | "failed"; error?: string }>();
 
   // Collect action results first
@@ -129,13 +139,23 @@ export function deriveTaskSteps(events: readonly HandleMessageStreamEvent[]): Ta
     if (event.type === "action.result") {
       const data = event.data as unknown as {
         readonly callId?: string;
+        readonly result?: {
+          readonly callId?: string;
+          readonly output?: unknown;
+          readonly isError?: boolean;
+        };
         readonly status?: "completed" | "failed";
         readonly error?: unknown;
       };
-      if (data?.callId) {
-        toolResults.set(data.callId, {
-          status: data.status === "failed" || data.error ? "failed" : "completed",
-          error: typeof data.error === "string" ? data.error : undefined,
+      const callId = data?.result?.callId ?? data?.callId;
+      if (callId) {
+        const isFailed =
+          data?.status === "failed" ||
+          Boolean(data?.error) ||
+          Boolean(data?.result?.isError);
+        toolResults.set(callId, {
+          status: isFailed ? "failed" : "completed",
+          error: typeof data?.error === "string" ? data.error : undefined,
         });
       }
     } else if (event.type === "reasoning.appended") {
@@ -150,7 +170,7 @@ export function deriveTaskSteps(events: readonly HandleMessageStreamEvent[]): Ta
     steps.push({
       id: "analysis",
       title: "Analyzing request & planning tasks",
-      status: hasActions || hasTextAppended ? "completed" : "in_progress",
+      status: hasActions || hasTextAppended || isTurnSettled ? "completed" : "in_progress",
     });
   }
 
@@ -170,12 +190,18 @@ export function deriveTaskSteps(events: readonly HandleMessageStreamEvent[]): Ta
         for (const action of data.actions) {
           const res = toolResults.get(action.callId);
           const { title, detail } = formatToolTitle(action.toolName, action.input);
+          let status: TaskStep["status"] = "in_progress";
+          if (res) {
+            status = res.status;
+          } else if (isTurnSettled) {
+            status = "completed";
+          }
 
           steps.push({
             id: action.callId,
             title,
             detail: res?.error ? `Error: ${res.error}` : detail,
-            status: res ? res.status : "in_progress",
+            status,
           });
         }
       }
@@ -187,7 +213,7 @@ export function deriveTaskSteps(events: readonly HandleMessageStreamEvent[]): Ta
     steps.push({
       id: "initial",
       title: "Analyzing request & planning tasks",
-      status: "in_progress",
+      status: isTurnSettled ? "completed" : "in_progress",
     });
   }
 
@@ -206,20 +232,12 @@ export function deriveTaskSteps(events: readonly HandleMessageStreamEvent[]): Ta
   }
 
   // 3. Final synthesis stage (only add if turn didn't fail)
-  if (!isTurnFailed) {
-    if (hasTextAppended) {
-      steps.push({
-        id: "synthesis",
-        title: "Synthesizing response & insights",
-        status: "in_progress",
-      });
-    } else if (steps.some((s) => s.status === "completed")) {
-      steps.push({
-        id: "synthesis",
-        title: "Generating response",
-        status: "pending",
-      });
-    }
+  if (!isTurnFailed && hasTextAppended) {
+    steps.push({
+      id: "synthesis",
+      title: "Synthesizing response & insights",
+      status: isTurnSettled ? "completed" : "in_progress",
+    });
   }
 
   if (failureMessage) {
@@ -272,7 +290,7 @@ export function TaskProgressIndicator({
           <span className="flex items-center gap-1.5">
             {hasFailed ? (
               <XIcon className="size-3.5 text-destructive" />
-            ) : allCompleted && !isStreaming ? (
+            ) : allCompleted ? (
               <CheckIcon className="size-3.5 text-emerald-500" />
             ) : (
               <Loader2Icon className="size-3.5 animate-spin text-muted-foreground" />
@@ -280,7 +298,7 @@ export function TaskProgressIndicator({
             <span className={hasFailed ? "truncate text-destructive" : "truncate"}>
               {hasFailed
                 ? `Failed: ${failedStep?.title ?? "Execution error"}`
-                : allCompleted && !isStreaming
+                : allCompleted
                   ? "Tasks completed"
                   : activeStep?.title ?? "Processing..."}
             </span>
