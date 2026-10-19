@@ -235,8 +235,8 @@ export async function getChatForUser(chatId: string, userId: string): Promise<Ac
     if (extractedSessionId) {
       resolvedSession = {
         sessionId: extractedSessionId,
-        continuationToken: extractedToken ?? resolvedSession?.continuationToken,
-        streamIndex: resolvedSession?.streamIndex ?? 0,
+        continuationToken: extractedToken ?? row.eveSession?.continuationToken,
+        streamIndex: row.eveSession?.streamIndex ?? eventValues.length,
       };
     }
   }

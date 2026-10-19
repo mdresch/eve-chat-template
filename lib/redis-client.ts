@@ -19,9 +19,7 @@ export function getRedisEnv() {
     process.env.UPSTASH_REDIS_REST_URL?.trim() ||
     process.env.KV_REST_API_URL?.trim() ||
     process.env.eve_UPSTASH_REDIS_REST_URL?.trim() ||
-    process.env.eve_KV_REST_API_URL?.trim() ||
-    process.env.REDIS_URL?.trim() ||
-    process.env.KV_URL?.trim();
+    process.env.eve_KV_REST_API_URL?.trim();
 
   const token =
     process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ||
@@ -81,6 +79,7 @@ export async function createRedisClient(
 
   // Trip circuit breaker on repeated failure to protect request latency
   redisUnavailableUntil = Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS;
+  cachedClient = null;
   const errorMessage = `Unable to connect to Redis after ${maxAttempts} attempts: ${
     lastError instanceof Error ? lastError.message : String(lastError)
   }`;
@@ -96,10 +95,12 @@ export async function createRedisClient(
 export async function getRedisClientSingleton(
   opts: CreateRedisClientOptions = {},
 ): Promise<Redis | null> {
+  if (Date.now() < redisUnavailableUntil) {
+    cachedClient = null;
+    return null;
+  }
+
   if (cachedClient) {
-    if (Date.now() < redisUnavailableUntil) {
-      return null;
-    }
     return cachedClient;
   }
 

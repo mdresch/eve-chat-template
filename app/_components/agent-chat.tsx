@@ -1439,7 +1439,7 @@ export function AgentChatSession({
         readonly text?: string;
       }[],
     ) => {
-      if (isFinalizingTurn) {
+      if (isTurnBlocked) {
         return;
       }
 
@@ -1872,7 +1872,11 @@ export function AgentChatSession({
     localEventsRef.current = nextLocalEvents;
     setLocalEvents(nextLocalEvents);
 
-    const allEvents = mergeLocalEvents(displayEvents, [waitingEvent]);
+    const baseEvents =
+      agent.events.length > 0
+        ? mergeStreamEventLogs(activeChat?.events ?? [], agent.events)
+        : displayEvents;
+    const allEvents = mergeLocalEvents(baseEvents, [waitingEvent]);
     const nextSession = advanceSessionWithLocalEvents(
       persistedSessionRef.current?.state ?? createInitialSessionState(),
       [waitingEvent],
