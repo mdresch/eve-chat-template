@@ -117,9 +117,11 @@ const LIVE_STREAM_WATCHDOG_POLL_MS = 5_000;
 const SANDBOX_POLL_INTERVAL_MS = 4_000;
 
 function createPersistedClientSession({
+  getEvents,
   initialSession,
   onSessionStarted,
 }: {
+  readonly getEvents?: () => readonly HandleMessageStreamEvent[];
   readonly initialSession?: SessionState;
   readonly onSessionStarted: (session: SessionState) => Promise<void> | void;
 }) {
@@ -132,13 +134,19 @@ function createPersistedClientSession({
     async send(input: SendTurnInput) {
       const previousSession = session;
       const normalizedInput = normalizeSendInput(input);
-      const response = await postSessionTurn(previousSession, normalizedInput);
+      const tokenFromEvents = extractContinuationTokenFromEvents(getEvents?.() ?? []);
+      const sessionToSend =
+        !previousSession.continuationToken && tokenFromEvents
+          ? { ...previousSession, continuationToken: tokenFromEvents }
+          : previousSession;
+      const response = await postSessionTurn(sessionToSend, normalizedInput);
       const startedSession = {
-        ...previousSession,
-        continuationToken: response.continuationToken ?? previousSession.continuationToken,
+        ...sessionToSend,
+        continuationToken:
+          response.continuationToken ?? sessionToSend.continuationToken,
         sessionId: response.sessionId,
         streamIndex:
-          previousSession.sessionId === response.sessionId ? previousSession.streamIndex : 0,
+          sessionToSend.sessionId === response.sessionId ? sessionToSend.streamIndex : 0,
       };
 
       session = startedSession;
@@ -302,15 +310,11 @@ function createHandleMessageBody({
     return null;
   }
 
-  if (session.continuationToken === undefined && body.message === undefined) {
-    return null;
-  }
+  const hasMessage = body.message !== undefined && body.message !== null;
+  const hasInputResponses =
+    Array.isArray(body.inputResponses) && body.inputResponses.length > 0;
 
-  if (
-    session.continuationToken !== undefined &&
-    body.message === undefined &&
-    body.inputResponses === undefined
-  ) {
+  if (!hasMessage && !hasInputResponses) {
     return null;
   }
 
@@ -516,6 +520,29 @@ async function* readNdjsonStream(body: ReadableStream<Uint8Array>) {
   }
 }
 
+function extractContinuationTokenFromEvents(
+  events: readonly HandleMessageStreamEvent[],
+): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+
+    if (
+      event &&
+      event.type === "session.waiting" &&
+      "data" in event &&
+      typeof event.data === "object" &&
+      event.data &&
+      "continuationToken" in event.data &&
+      typeof event.data.continuationToken === "string" &&
+      event.data.continuationToken.length > 0
+    ) {
+      return event.data.continuationToken;
+    }
+  }
+
+  return undefined;
+}
+
 function advanceBrowserSession({
   baseStreamIndex,
   continuationToken,
@@ -530,10 +557,12 @@ function advanceBrowserSession({
   readonly sessionId: string;
 }) {
   const boundary = findBoundaryEvent(events);
+  const eventToken = extractContinuationTokenFromEvents(events);
+  const resolvedToken = eventToken ?? continuationToken ?? session.continuationToken;
 
   if (boundary?.type === "session.waiting") {
     return {
-      continuationToken: continuationToken ?? session.continuationToken,
+      continuationToken: resolvedToken,
       sessionId,
       streamIndex: baseStreamIndex + events.length,
     };
@@ -543,7 +572,7 @@ function advanceBrowserSession({
 
   if (lastEvent?.type === "authorization.required") {
     return {
-      continuationToken: continuationToken ?? session.continuationToken,
+      continuationToken: resolvedToken,
       sessionId,
       streamIndex: baseStreamIndex + events.length,
     };
@@ -554,7 +583,7 @@ function advanceBrowserSession({
     // settled event. Keep the session identity so a reload or retry can
     // resume this same in-flight turn instead of silently starting over.
     return {
-      continuationToken: continuationToken ?? session.continuationToken,
+      continuationToken: resolvedToken,
       sessionId,
       streamIndex: baseStreamIndex + events.length,
     };
@@ -854,6 +883,11 @@ export function AgentChatSession({
   );
   const persistedSessionRef = useRef<PersistedClientSession | null>(null);
   persistedSessionRef.current ??= createPersistedClientSession({
+    getEvents: () => [
+      ...knownInitialEventsRef.current,
+      ...streamEventsRef.current,
+      ...localEventsRef.current,
+    ],
     initialSession: activeChat?.session,
     onSessionStarted: (session) => onSessionStartedRef.current(session),
   });
@@ -1636,6 +1670,7 @@ export function AgentChatSession({
         pendingMessageText,
       );
     const session = createPersistedClientSession({
+      getEvents: () => [...existingEvents, ...resumedEventsRef.current],
       initialSession: activeChat.session,
       onSessionStarted: persistSessionState,
     });
