@@ -90,7 +90,7 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
       lang="en"
       suppressHydrationWarning
     >
-      <head>
+      <head suppressHydrationWarning>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} id="theme-init" />
         <AuthDisplayPreHydrationHead />
       </head>
