@@ -16,6 +16,7 @@
     "db:studio": "drizzle-kit studio",
     "dev": "next dev",
     "start": "next start",
+    "test": "node --test lib/__tests__/*.test.ts",
     "typecheck": "next typegen && tsgo --noEmit -p tsconfig.json",
     "build:eve": "eve build",
     "dev:eve": "eve dev",

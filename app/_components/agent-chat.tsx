@@ -43,7 +43,12 @@ import { IntegrationsMenu } from "@/components/chat/integrations-menu";
 import { AgentMessage, needsInputResponse } from "@/components/chat/message";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { isChatTurnSettledEvent } from "@/lib/chat/events";
+import {
+  extractContinuationTokenFromEvents,
+  extractSessionIdFromEvents,
+  isChatTurnSettledEvent,
+  isStreamTurnBoundaryEvent,
+} from "@/lib/chat/events";
 import { getChatMessageLengthError } from "@/lib/chat/limits";
 import {
   findLatestSandboxContainerName,
@@ -117,10 +122,12 @@ const LIVE_STREAM_WATCHDOG_POLL_MS = 5_000;
 const SANDBOX_POLL_INTERVAL_MS = 4_000;
 
 function createPersistedClientSession({
+  getActiveChatSession,
   getEvents,
   initialSession,
   onSessionStarted,
 }: {
+  readonly getActiveChatSession?: () => SessionState | undefined;
   readonly getEvents?: () => readonly HandleMessageStreamEvent[];
   readonly initialSession?: SessionState;
   readonly onSessionStarted: (session: SessionState) => Promise<void> | void;
@@ -132,13 +139,32 @@ function createPersistedClientSession({
       return session;
     },
     async send(input: SendTurnInput) {
-      const previousSession = session;
+      const activeChatSession = getActiveChatSession?.();
+      if (!session.sessionId && activeChatSession?.sessionId) {
+        session = {
+          ...activeChatSession,
+          continuationToken:
+            activeChatSession.continuationToken ?? session.continuationToken,
+          streamIndex: Math.max(session.streamIndex, activeChatSession.streamIndex),
+        };
+      }
+
+      const allEvents = getEvents?.() ?? [];
+      const tokenFromEvents = extractContinuationTokenFromEvents(allEvents);
+      const sessionIdFromEvents = extractSessionIdFromEvents(allEvents);
+      const resolvedSessionId =
+        session.sessionId || activeChatSession?.sessionId || sessionIdFromEvents;
+      const resolvedContinuationToken =
+        session.continuationToken || tokenFromEvents || activeChatSession?.continuationToken;
+
+      const previousSession = {
+        ...session,
+        continuationToken: resolvedContinuationToken,
+        sessionId: resolvedSessionId,
+      };
+
       const normalizedInput = normalizeSendInput(input);
-      const tokenFromEvents = extractContinuationTokenFromEvents(getEvents?.() ?? []);
-      const sessionToSend =
-        !previousSession.continuationToken && tokenFromEvents
-          ? { ...previousSession, continuationToken: tokenFromEvents }
-          : previousSession;
+      const sessionToSend = previousSession;
       const response = await postSessionTurn(sessionToSend, normalizedInput);
       const startedSession = {
         ...sessionToSend,
@@ -235,6 +261,10 @@ async function postSessionTurn(
 
   if (!body) {
     throw new Error("Session turn requires a message or input response.");
+  }
+
+  if (body.inputResponses && !session.sessionId) {
+    throw new Error("Session is not ready to accept input response.");
   }
 
   const response = await fetch(
@@ -396,7 +426,7 @@ async function* streamSessionEvents({
             events.length === 1 &&
             event.type === "session.waiting";
 
-          if (isChatTurnSettledEvent(event) && !isStaleLeadingWaiting) {
+          if (isStreamTurnBoundaryEvent(event) && !isStaleLeadingWaiting) {
             foundBoundary = true;
             break;
           }
@@ -520,29 +550,6 @@ async function* readNdjsonStream(body: ReadableStream<Uint8Array>) {
   }
 }
 
-function extractContinuationTokenFromEvents(
-  events: readonly HandleMessageStreamEvent[],
-): string | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-
-    if (
-      event &&
-      event.type === "session.waiting" &&
-      "data" in event &&
-      typeof event.data === "object" &&
-      event.data &&
-      "continuationToken" in event.data &&
-      typeof event.data.continuationToken === "string" &&
-      event.data.continuationToken.length > 0
-    ) {
-      return event.data.continuationToken;
-    }
-  }
-
-  return undefined;
-}
-
 function advanceBrowserSession({
   baseStreamIndex,
   continuationToken,
@@ -560,36 +567,15 @@ function advanceBrowserSession({
   const eventToken = extractContinuationTokenFromEvents(events);
   const resolvedToken = eventToken ?? continuationToken ?? session.continuationToken;
 
-  if (boundary?.type === "session.waiting") {
-    return {
-      continuationToken: resolvedToken,
-      sessionId,
-      streamIndex: baseStreamIndex + events.length,
-    };
+  if (boundary?.type === "session.completed" || boundary?.type === "session.failed") {
+    return createInitialSessionState();
   }
 
-  const lastEvent = events.at(-1);
-
-  if (lastEvent?.type === "authorization.required") {
-    return {
-      continuationToken: resolvedToken,
-      sessionId,
-      streamIndex: baseStreamIndex + events.length,
-    };
-  }
-
-  if (events.length > 0 && !boundary) {
-    // The stream ended (idle timeout, disconnect) without ever reaching a
-    // settled event. Keep the session identity so a reload or retry can
-    // resume this same in-flight turn instead of silently starting over.
-    return {
-      continuationToken: resolvedToken,
-      sessionId,
-      streamIndex: baseStreamIndex + events.length,
-    };
-  }
-
-  return createInitialSessionState();
+  return {
+    continuationToken: resolvedToken,
+    sessionId,
+    streamIndex: baseStreamIndex + events.length,
+  };
 }
 
 function findBoundaryEvent(events: readonly HandleMessageStreamEvent[]) {
@@ -883,6 +869,7 @@ export function AgentChatSession({
   );
   const persistedSessionRef = useRef<PersistedClientSession | null>(null);
   persistedSessionRef.current ??= createPersistedClientSession({
+    getActiveChatSession: () => activeChat?.session,
     getEvents: () => [
       ...knownInitialEventsRef.current,
       ...streamEventsRef.current,
@@ -1624,10 +1611,16 @@ export function AgentChatSession({
       setPolledSandboxContainerName(null);
       stopFinalizingTurn();
       clearLocalPendingUserMessage();
+      if (activeChat?.session) {
+        persistedSessionRef.current?.setState(activeChat.session);
+      }
     } else if (!isTurnBlocked) {
       eventIndexRef.current = Math.max(eventIndexRef.current, nextEventIndex);
       if (activeChat) {
         knownInitialEventsRef.current = activeChat.events;
+      }
+      if (activeChat?.session?.sessionId && !persistedSessionRef.current?.state.sessionId) {
+        persistedSessionRef.current?.setState(activeChat.session);
       }
     }
     setCurrentTitle(nextTitle);
@@ -1635,6 +1628,7 @@ export function AgentChatSession({
   }, [
     activeChat?.events.length,
     activeChat?.id,
+    activeChat?.session,
     activeChat?.title,
     chatId,
     clearLocalPendingUserMessage,

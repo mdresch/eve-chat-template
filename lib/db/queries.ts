@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
 import type { HandleMessageStreamEvent, SessionState } from "eve/client";
-import { isChatTurnSettledEvent } from "@/lib/chat/events";
+import {
+  extractContinuationTokenFromEvents,
+  extractSessionIdFromEvents,
+  isChatTurnSettledEvent,
+} from "@/lib/chat/events";
 import type { ActiveChat, ChatListItem, ChatListPage, ChatStatus } from "@/lib/chat/types";
 import { createFallbackTitle, DEFAULT_CHAT_TITLE } from "@/lib/chat/title";
 import type { AiProvider, SandboxProvider } from "@/lib/db/schema";
@@ -224,12 +228,25 @@ export async function getChatForUser(chatId: string, userId: string): Promise<Ac
     ),
   );
 
+  let resolvedSession: SessionState | undefined = row.eveSession ?? undefined;
+  if (!resolvedSession?.sessionId && eventValues.length > 0) {
+    const extractedSessionId = extractSessionIdFromEvents(eventValues);
+    const extractedToken = extractContinuationTokenFromEvents(eventValues);
+    if (extractedSessionId) {
+      resolvedSession = {
+        sessionId: extractedSessionId,
+        continuationToken: extractedToken ?? resolvedSession?.continuationToken,
+        streamIndex: resolvedSession?.streamIndex ?? 0,
+      };
+    }
+  }
+
   return {
     events: eventValues,
     id: row.id,
     pendingUserMessage: hasCurrentTurnCompleted ? null : row.pendingUserMessage,
     sandboxContainerName: row.sandboxContainerName,
-    session: row.eveSession ?? undefined,
+    session: resolvedSession,
     title: row.title,
   };
 }
